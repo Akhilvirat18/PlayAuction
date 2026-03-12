@@ -20,11 +20,21 @@ export const TeamList = memo(({ teams, currentBidTeamId, expandedTeamId, setExpa
 
                 <div className="flex justify-between items-center z-10 mb-2">
                     <div className="flex items-center gap-3">
-                        {t.teamLogo && (
-                            <div className="w-8 h-8 rounded-full bg-white/5 flex items-center justify-center p-1 border border-white/10">
-                                <img src={t.teamLogo} alt={t.teamName} className="w-full h-full object-contain" />
-                            </div>
-                        )}
+                        <div className="relative">
+                            {t.teamLogo ? (
+                                <div className="w-8 h-8 rounded-full bg-white/5 flex items-center justify-center p-1 border border-white/10">
+                                    <img src={t.teamLogo} alt={t.teamName} className="w-full h-full object-contain" />
+                                </div>
+                            ) : (
+                                <div className="w-8 h-8 rounded-full bg-slate-800 flex items-center justify-center border border-white/10">
+                                    <span className="text-[10px] font-black text-white">{t.teamName.charAt(0)}</span>
+                                </div>
+                            )}
+                            <div 
+                                className={`absolute -bottom-1 -right-1 w-3 h-3 rounded-full border-2 border-slate-950 shadow-sm ${t.isOnline ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)] animate-pulse' : 'bg-red-500 shadow-[0_0_4px_rgba(239,68,68,0.4)]'}`} 
+                                title={t.isOnline ? "Online" : "Offline"}
+                            ></div>
+                        </div>
                         <span className="font-black text-xs lg:text-[13px] tracking-tight uppercase" style={{ color: t.teamThemeColor }}>{t.teamName}</span>
                     </div>
                     <span className="font-mono font-black text-base lg:text-lg text-white">₹{t.currentPurse}L</span>

@@ -65,7 +65,7 @@ const GavelSlam = ({ type, teamName, teamColor, teamLogo, playerName, winningBid
         return (
             <motion.div
                 initial={{ scale: 2, opacity: 0, rotate: -20 }}
-                animate={{ scale: 0.5, opacity: 1, rotate: -10 }}
+                animate={{ scale: window.innerWidth < 1024 ? 0.35 : 0.25, opacity: 1, rotate: -10 }}
                 exit={{ scale: 0, opacity: 0, y: -50 }}
                 transition={{ type: "spring", stiffness: 200, damping: 12, delay: 0.1 }}
                 className="absolute z-[100] drop-shadow-[0_20px_30px_rgba(0,0,0,0.5)] flex items-center justify-center pointer-events-none"
@@ -120,7 +120,7 @@ const GavelSlam = ({ type, teamName, teamColor, teamLogo, playerName, winningBid
     return (
         <motion.div
             initial={{ scale: 2, opacity: 0, rotate: 10 }}
-            animate={{ scale: 0.5, opacity: 1, rotate: -15 }}
+            animate={{ scale: window.innerWidth < 1024 ? 0.35 : 0.25, opacity: 1, rotate: -15 }}
             exit={{ scale: 0, opacity: 0, y: -50 }}
             transition={{ type: "spring", stiffness: 200, damping: 10, delay: 0.1 }}
             className="absolute z-[100] px-4 py-2 lg:px-10 lg:py-5 border-[4px] lg:border-[8px] border-red-600 rounded-xl lg:rounded-3xl drop-shadow-[0_15px_15px_rgba(220,38,38,0.4)] bg-black/60 backdrop-blur-sm pointer-events-none overflow-hidden"

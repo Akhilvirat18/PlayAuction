@@ -4,6 +4,8 @@ const auctionRoomSchema = new mongoose.Schema({
     roomId: { type: String, required: true, unique: true },
     hostSocketId: { type: String }, // For legacy engine reference
     status: { type: String, enum: ["Lobby", "Auctioning", "Selection", "Finished"], default: "Lobby" },
+    isPublic: { type: Boolean, default: false },
+    maxTeams: { type: Number, default: 10 },
     purseLimit: { type: Number, default: 12000 },
 
     // Embedded array of franchises inside this specific room

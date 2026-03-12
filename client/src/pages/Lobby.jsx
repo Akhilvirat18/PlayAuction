@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useSocket } from '../context/SocketContext';
 import { motion, AnimatePresence } from 'framer-motion';
+import { Copy, Check } from 'lucide-react';
 
 const IPL_TEAMS = [
     { id: 'MI', name: 'Mumbai Indians', color: '#004BA0', logoUrl: 'https://upload.wikimedia.org/wikipedia/en/thumb/c/cd/Mumbai_Indians_Logo.svg/1200px-Mumbai_Indians_Logo.svg.png' },
@@ -30,9 +31,18 @@ const Lobby = () => {
     const [timerDuration, setTimerDuration] = useState(10);
     const [error, setError] = useState('');
 
-    // New state for dynamic team selection during join flow
     const [joinMode, setJoinMode] = useState(false);
     const [availableTeamsForRoom, setAvailableTeamsForRoom] = useState(null);
+    const [isPublic, setIsPublic] = useState(false);
+    const [maxTeams, setMaxTeams] = useState(10);
+    const [publicRooms, setPublicRooms] = useState([]);
+    const [isSpectator, setIsSpectator] = useState(false);
+    
+    // New UI states for Search & Filter
+    const [searchTerm, setSearchTerm] = useState('');
+    const [filterType, setFilterType] = useState('All'); // 'All', 'Public', 'Private'
+    const [isFilterOpen, setIsFilterOpen] = useState(false);
+    const [copied, setCopied] = useState(false);
 
     const socket = useSocket();
     const navigate = useNavigate();
@@ -46,10 +56,25 @@ const Lobby = () => {
             setError('');
         });
 
-        socket.on('room_joined', ({ roomCode, state }) => {
+        socket.on('room_joined', ({ roomCode, state, isSpectator: joinedAsSpectator }) => {
             setRoomState(state);
             setIsJoined(true);
+            setIsSpectator(!!joinedAsSpectator);
             setError('');
+            localStorage.setItem('lastRoomCode', roomCode);
+
+            // Redirect if auction is already in progress
+            if (state.status === 'Auctioning' || state.status === 'Paused') {
+                navigate(`/auction/${roomCode}`, { state: { roomState: state } });
+            } else if (state.status === 'Selection') {
+                navigate(`/selection/${roomCode}`);
+            } else if (state.status === 'Finished') {
+                navigate(`/results/${roomCode}`);
+            }
+        });
+
+        socket.on('public_rooms_list', (rooms) => {
+            setPublicRooms(rooms);
         });
 
         socket.on('lobby_update', ({ teams }) => {
@@ -63,6 +88,9 @@ const Lobby = () => {
 
         socket.on('error', (msg) => {
             setError(msg);
+            if (msg.includes('Room not found')) {
+                localStorage.removeItem('lastRoomCode');
+            }
         });
 
         socket.on('auction_started', ({ state }) => {
@@ -79,7 +107,6 @@ const Lobby = () => {
         socket.on('settings_updated', ({ timerDuration }) => {
             setTimerDuration(timerDuration);
         });
-
         return () => {
             socket.off('room_created');
             socket.off('room_joined');
@@ -88,8 +115,27 @@ const Lobby = () => {
             socket.off('error');
             socket.off('auction_started');
             socket.off('kicked_from_room');
+            socket.off('settings_updated');
+            socket.off('public_rooms_list');
         };
     }, [socket, navigate]);
+
+    useEffect(() => {
+        if (socket && !isJoined) {
+            socket.emit('get_public_rooms');
+
+            // Auto-reconnect if we have a saved room
+            const lastRoomCode = localStorage.getItem('lastRoomCode');
+            if (lastRoomCode && playerName) {
+                socket.emit('join_room', { roomCode: lastRoomCode, playerName });
+            }
+
+            const interval = setInterval(() => {
+                socket.emit('get_public_rooms');
+            }, 10000);
+            return () => clearInterval(interval);
+        }
+    }, [socket, isJoined, playerName]);
 
     useEffect(() => {
         if (playerName) {
@@ -99,12 +145,13 @@ const Lobby = () => {
 
     const handleCreate = () => {
         if (!playerName) return setError('Please enter your name');
-        socket.emit('create_room', { playerName });
+        socket.emit('create_room', { playerName, isPublic, maxTeams });
     };
 
-    const handleJoin = () => {
-        if (!playerName || !roomCodeInput) return setError('Name and Room Code required');
-        socket.emit('join_room', { roomCode: roomCodeInput, playerName });
+    const handleJoin = (spectate = false, manualCode = null) => {
+        const codeToUse = manualCode || roomCodeInput;
+        if (!playerName || !codeToUse) return setError('Name and Room Code required');
+        socket.emit('join_room', { roomCode: codeToUse, playerName, isSpectator: spectate });
     };
 
     const handleClaimTeam = () => {
@@ -116,8 +163,25 @@ const Lobby = () => {
         socket.emit('start_auction', { roomCode: roomState.roomCode });
     };
 
+    const handleCopyCode = () => {
+        if (!roomState?.roomCode) return;
+        navigator.clipboard.writeText(roomState.roomCode);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+    };
+
     const myTeam = roomState?.teams?.find(t => t.ownerSocketId === socket.id);
     const hasClaimedTeam = !!myTeam;
+
+    // Filter Logic for Room Directory
+    const filteredRooms = publicRooms.filter(room => {
+        const matchesSearch = room.roomCode.toLowerCase().includes(searchTerm.toLowerCase()) || 
+                             (room.hostName || '').toLowerCase().includes(searchTerm.toLowerCase());
+        const matchesFilter = filterType === 'All' || 
+                             (filterType === 'Public' && room.isPublic) || 
+                             (filterType === 'Private' && !room.isPublic);
+        return matchesSearch && matchesFilter;
+    });
 
     // Use available teams from state if present, otherwise fallback to IPL_TEAMS
     const displayTeams = availableTeamsForRoom || IPL_TEAMS;
@@ -175,51 +239,62 @@ const Lobby = () => {
                                         initial={{ opacity: 0, y: 20 }}
                                         animate={{ opacity: 1, y: 0 }}
                                         exit={{ opacity: 0, scale: 0.95 }}
-                                        className="space-y-6 lg:space-y-8"
                                     >
-                                        <div className="space-y-3 lg:space-y-4">
-                                            <div className="space-y-1.5 lg:space-y-2">
-                                                <label className="text-[9px] lg:text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">The Gaffer's Name</label>
+                                        <div className="space-y-6">
+                                            {/* Gaffer Name Input */}
+                                            <div className="space-y-2">
+                                                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">The Gaffer's Name</label>
                                                 <input
                                                     type="text"
                                                     placeholder="Enter your name..."
-                                                    className="w-full bg-transparent border border-white/20 rounded-xl lg:rounded-2xl px-5 py-3.5 lg:py-4 focus:outline-none focus:border-[#D4AF37]/70 text-white font-bold transition-all placeholder:text-slate-600"
+                                                    className="w-full bg-[#12121a]/80 border border-white/5 rounded-2xl px-6 py-4 focus:outline-none focus:border-[#D4AF37]/50 text-white font-bold transition-all placeholder:text-slate-600 shadow-inner"
                                                     value={playerName}
                                                     onChange={(e) => setPlayerName(e.target.value)}
                                                 />
                                             </div>
 
+                                            {/* Create Room Button */}
                                             <button
                                                 onClick={handleCreate}
-                                                className="w-full py-3 lg:py-4 rounded-full border border-[#D4AF37] text-[#D4AF37] font-black tracking-widest uppercase text-xs lg:text-sm hover:bg-[#D4AF37] hover:text-black transition-all shadow-[0_0_15px_rgba(212,175,55,0.2)]"
+                                                className="w-full py-5 rounded-3xl bg-transparent border border-[#d4af37] text-[#d4af37] font-black tracking-[0.2em] uppercase text-xs lg:text-sm hover:bg-[#d4af37]/10 active:scale-[0.98] transition-all flex items-center justify-center gap-3 shadow-[0_0_15px_rgba(212,175,55,0.1)]"
                                             >
                                                 CREATE NEW ROOM
                                             </button>
+
+                                            {/* Divider */}
+                                            <div className="flex items-center gap-4 py-2">
+                                                <div className="h-[1px] flex-1 bg-white/10"></div>
+                                                <span className="text-[8px] font-black text-slate-500 uppercase tracking-[0.2em]">Or Join Existing</span>
+                                                <div className="h-[1px] flex-1 bg-white/10"></div>
+                                            </div>
+
+                                            {/* Join Existing Area */}
+                                            <div className="flex gap-3">
+                                                <input
+                                                    type="text"
+                                                    placeholder="ENTER ROOM CODE"
+                                                    className="flex-1 bg-[#12121a]/80 border border-white/5 rounded-2xl text-center px-4 py-4 focus:outline-none focus:border-blue-500/50 text-white font-black tracking-widest uppercase transition-all placeholder:text-slate-600 shadow-inner"
+                                                    value={roomCodeInput}
+                                                    onChange={(e) => setRoomCodeInput(e.target.value)}
+                                                />
+                                                <button
+                                                    onClick={() => handleJoin()}
+                                                    className="px-8 rounded-2xl bg-[#2563eb] text-white font-black tracking-widest uppercase text-xs lg:text-sm hover:brightness-110 active:scale-[0.98] transition-all shadow-[0_0_20px_rgba(37,99,235,0.4)]"
+                                                >
+                                                    JOIN
+                                                </button>
+                                            </div>
                                         </div>
 
-                                        <div className="flex items-center gap-3 lg:gap-4 my-2 lg:my-4">
-                                            <div className="h-px bg-white/10 flex-1"></div>
-                                            <span className="text-[8px] lg:text-[10px] font-black text-slate-500 uppercase tracking-widest">OR JOIN EXISTING</span>
-                                            <div className="h-px bg-white/10 flex-1"></div>
-                                        </div>
-
-                                        <div className="flex gap-2 lg:gap-3">
-                                            <input
-                                                type="text"
-                                                placeholder="ENTER ROOM CODE"
-                                                className="w-2/3 bg-transparent border border-white/20 rounded-xl px-4 py-3.5 text-center text-white font-black tracking-[0.2em] focus:outline-none focus:border-[#3b82f6]/70 uppercase placeholder:text-slate-600 text-xs lg:text-sm"
-                                                value={roomCodeInput}
-                                                onChange={(e) => setRoomCodeInput(e.target.value.toUpperCase())}
-                                            />
-                                            <button
-                                                onClick={handleJoin}
-                                                className="w-1/3 bg-blue-600 hover:bg-blue-500 text-white font-black rounded-xl transition-all uppercase text-[10px] lg:text-sm tracking-wider shadow-[0_0_20px_rgba(37,99,235,0.4)]"
+                                        {error && (
+                                            <motion.p 
+                                                initial={{ opacity: 0 }} 
+                                                animate={{ opacity: 1 }} 
+                                                className="text-red-500 text-[10px] font-black uppercase tracking-widest text-center mt-6 bg-red-500/5 py-3 rounded-2xl border border-red-500/10"
                                             >
-                                                JOIN
-                                            </button>
-                                        </div>
-
-                                        {error && <p className="text-red-500 text-[10px] font-black uppercase tracking-widest text-center mt-2">{error}</p>}
+                                                {error}
+                                            </motion.p>
+                                        )}
                                     </motion.div>
                                 ) : (
                                     <motion.div
@@ -228,9 +303,27 @@ const Lobby = () => {
                                         animate={{ opacity: 1, scale: 1 }}
                                         className="space-y-6 lg:space-y-8"
                                     >
-                                        <div className="text-center">
+                                        <div className="text-center relative group">
                                             <h2 className="text-[10px] font-black text-slate-500 uppercase tracking-[0.3em] mb-2">Room Assigned</h2>
-                                            <div className="text-4xl lg:text-5xl font-black text-[#D4AF37] tracking-[0.1em] drop-shadow-[0_0_15px_rgba(212,175,55,0.4)]">{roomState.roomCode}</div>
+                                            <div className="flex items-center justify-center gap-4">
+                                                <div className="text-4xl lg:text-5xl font-black text-[#D4AF37] tracking-[0.1em] drop-shadow-[0_0_15px_rgba(212,175,55,0.4)]">{roomState.roomCode}</div>
+                                                <button
+                                                    onClick={handleCopyCode}
+                                                    className="p-2.5 rounded-xl bg-white/5 border border-white/10 text-slate-400 hover:text-[#D4AF37] hover:border-[#D4AF37]/50 transition-all active:scale-90"
+                                                    title="Copy Room Code"
+                                                >
+                                                    {copied ? <Check size={18} className="text-green-500" /> : <Copy size={18} />}
+                                                </button>
+                                            </div>
+                                            {copied && (
+                                                <motion.div
+                                                    initial={{ opacity: 0, y: 10 }}
+                                                    animate={{ opacity: 1, y: 0 }}
+                                                    className="absolute -bottom-6 left-1/2 -translate-x-1/2 text-[8px] font-black text-green-500 uppercase tracking-widest"
+                                                >
+                                                    Code Copied!
+                                                </motion.div>
+                                            )}
                                         </div>
 
                                         {!hasClaimedTeam ? (
@@ -295,7 +388,7 @@ const Lobby = () => {
                                                                 <div className="text-[8px] lg:text-[10px] text-slate-500 font-bold truncate">{t.ownerName} {t.ownerSocketId === roomState.host && '(Host)'}</div>
                                                             </div>
 
-                                                            {roomState.host === socket.id && t.ownerSocketId !== socket.id && (
+                                                            {((roomState.host === socket.id) || (playerName && roomState.hostName === playerName)) && t.ownerSocketId !== socket.id && (
                                                                 <button
                                                                     onClick={() => {
                                                                         if (window.confirm(`Are you sure you want to kick ${t.ownerName} from the room?`)) {
@@ -315,7 +408,7 @@ const Lobby = () => {
                                                     ))}
                                                 </div>
 
-                                                {roomState.host === socket.id && (
+                                                {((roomState.host === socket.id) || (playerName && roomState.hostName === playerName)) && (
                                                     <div className="mt-6 lg:mt-8 space-y-3 lg:space-y-4">
                                                         <h3 className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Auction Timer Settings</h3>
                                                         <div className="flex gap-4">
@@ -335,7 +428,7 @@ const Lobby = () => {
                                                     </div>
                                                 )}
 
-                                                {roomState.host === socket.id ? (
+                                                {((roomState.host === socket.id) || (playerName && roomState.hostName === playerName)) ? (
                                                     <button
                                                         onClick={handleStart}
                                                         className="w-full py-4 mt-4 lg:mt-6 rounded-full bg-[#D4AF37] text-black font-black uppercase tracking-widest text-xs lg:text-sm hover:scale-[1.02] active:scale-[0.98] transition-transform shadow-[0_0_20px_rgba(212,175,55,0.4)]"

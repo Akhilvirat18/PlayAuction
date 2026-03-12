@@ -2,7 +2,7 @@ const mongoose = require('mongoose');
 const Franchise = require('../models/Franchise');
 require('dotenv').config({ path: '../.env' });
 
-const dbUri = process.env.MONGO_URI || 'mongodb+srv://Mahesh:Mahi%40665@cluster0.rcy9qs6.mongodb.net/ipl';
+const dbUri = process.env.MONGO_URI;
 
 const IPL_TEAMS = [
     { shortName: 'MI', name: 'Mumbai Indians', primaryColor: '#004BA0', secondaryColor: '#D1AB3E', purseLimit: 12000, logoUrl: 'https://upload.wikimedia.org/wikipedia/en/thumb/c/cd/Mumbai_Indians_Logo.svg/1200px-Mumbai_Indians_Logo.svg.png' },

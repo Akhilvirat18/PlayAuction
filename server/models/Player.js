@@ -22,12 +22,9 @@ const playerSchema = new mongoose.Schema({
     economy: { type: Number, default: 0 },
     stumpings: { type: Number, default: 0 },
     catches: { type: Number, default: 0 },
+    highestScore: { type: String, default: '0' },
+    bestBowling: { type: String, default: '0/0' },
     iplSeasonsActive: { type: Number, default: 0 }
-  },
-  form: {
-    lastMatches: [{ type: String, enum: ["Excellent", "Decent", "Poor"] }],
-    score: { type: Number, min: 1, max: 10 },
-    trend: { type: String, enum: ["Up", "Stable", "Down"] }
   }
 }, { timestamps: true });
 

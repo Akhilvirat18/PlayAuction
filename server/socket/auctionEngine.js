@@ -5,6 +5,35 @@ const Franchise = require('../models/Franchise');
 const AuctionTransaction = require('../models/AuctionTransaction');
 const mongoose = require('mongoose');
 
+// Default franchise data — used as a self-healing fallback if DB is empty
+const DEFAULT_FRANCHISES = [
+    { shortName: 'MI',   name: 'Mumbai Indians',           primaryColor: '#004BA0', secondaryColor: '#D1AB3E', purseLimit: 12000, logoUrl: 'https://upload.wikimedia.org/wikipedia/en/thumb/c/cd/Mumbai_Indians_Logo.svg/1200px-Mumbai_Indians_Logo.svg.png' },
+    { shortName: 'CSK',  name: 'Chennai Super Kings',       primaryColor: '#FFFF3C', secondaryColor: '#0081E9', purseLimit: 12000, logoUrl: 'https://upload.wikimedia.org/wikipedia/en/thumb/2/2b/Chennai_Super_Kings_Logo.svg/1200px-Chennai_Super_Kings_Logo.svg.png' },
+    { shortName: 'RCB',  name: 'Royal Challengers Bengaluru', primaryColor: '#EC1C24', secondaryColor: '#000000', purseLimit: 12000, logoUrl: 'https://upload.wikimedia.org/wikipedia/en/thumb/d/d4/Royal_Challengers_Bengaluru_Logo.svg/330px-Royal_Challengers_Bengaluru_Logo.svg.png' },
+    { shortName: 'KKR',  name: 'Kolkata Knight Riders',     primaryColor: '#2E0854', secondaryColor: '#B3A123', purseLimit: 12000, logoUrl: 'https://upload.wikimedia.org/wikipedia/en/thumb/4/4c/Kolkata_Knight_Riders_Logo.svg/1200px-Kolkata_Knight_Riders_Logo.svg.png' },
+    { shortName: 'DC',   name: 'Delhi Capitals',            primaryColor: '#00008B', secondaryColor: '#174796', purseLimit: 12000, logoUrl: 'https://upload.wikimedia.org/wikipedia/en/thumb/2/2f/Delhi_Capitals.svg/500px-Delhi_Capitals.svg.png' },
+    { shortName: 'PBKS', name: 'Punjab Kings',              primaryColor: '#ED1B24', secondaryColor: '#D7CA95', purseLimit: 12000, logoUrl: 'https://upload.wikimedia.org/wikipedia/en/thumb/d/d4/Punjab_Kings_Logo.svg/1200px-Punjab_Kings_Logo.svg.png' },
+    { shortName: 'RR',   name: 'Rajasthan Royals',          primaryColor: '#EA1A85', secondaryColor: '#000000', purseLimit: 12000, logoUrl: 'https://scores.iplt20.com/ipl/teamlogos/RR.png' },
+    { shortName: 'SRH',  name: 'Sunrisers Hyderabad',       primaryColor: '#FF822A', secondaryColor: '#000000', purseLimit: 12000, logoUrl: 'https://upload.wikimedia.org/wikipedia/en/thumb/5/51/Sunrisers_Hyderabad_Logo.svg/500px-Sunrisers_Hyderabad_Logo.svg.png' },
+    { shortName: 'LSG',  name: 'Lucknow Super Giants',      primaryColor: '#00D1FF', secondaryColor: '#F7A721', purseLimit: 12000, logoUrl: 'https://upload.wikimedia.org/wikipedia/en/thumb/a/a9/Lucknow_Super_Giants_IPL_Logo.svg/1200px-Lucknow_Super_Giants_IPL_Logo.svg.png' },
+    { shortName: 'GT',   name: 'Gujarat Titans',            primaryColor: '#1B2133', secondaryColor: '#B3975A', purseLimit: 12000, logoUrl: 'https://upload.wikimedia.org/wikipedia/en/thumb/0/09/Gujarat_Titans_Logo.svg/1200px-Gujarat_Titans_Logo.svg.png' },
+    { shortName: 'DCG',  name: 'Deccan Chargers',           primaryColor: '#D1E1EF', secondaryColor: '#263238', purseLimit: 12000, logoUrl: 'https://upload.wikimedia.org/wikipedia/en/a/a6/HyderabadDeccanChargers.png' },
+    { shortName: 'KTK',  name: 'Kochi Tuskers Kerala',      primaryColor: '#F15A24', secondaryColor: '#8E288E', purseLimit: 12000, logoUrl: 'https://upload.wikimedia.org/wikipedia/en/thumb/9/96/Kochi_Tuskers_Kerala_Logo.svg/500px-Kochi_Tuskers_Kerala_Logo.svg.png' },
+    { shortName: 'PWI',  name: 'Pune Warriors India',       primaryColor: '#40E0D0', secondaryColor: '#2C2B29', purseLimit: 12000, logoUrl: 'https://upload.wikimedia.org/wikipedia/en/4/4a/Pune_Warriors_India_IPL_Logo.png' },
+    { shortName: 'RPS',  name: 'Rising Pune Supergiant',    primaryColor: '#D11D70', secondaryColor: '#FCCC04', purseLimit: 12000, logoUrl: 'https://upload.wikimedia.org/wikipedia/en/9/9a/Rising_Pune_Supergiant.png' },
+    { shortName: 'GL',   name: 'Gujarat Lions',             primaryColor: '#E04F16', secondaryColor: '#FFA500', purseLimit: 12000, logoUrl: 'https://upload.wikimedia.org/wikipedia/en/c/c4/Gujarat_Lions.png' },
+];
+
+// Self-healing: ensure the Franchise collection is never empty
+async function ensureFranchisesSeeded() {
+    const count = await Franchise.countDocuments();
+    if (count === 0) {
+        console.warn('>>> Franchise collection is empty — auto-seeding 15 franchises...');
+        await Franchise.insertMany(DEFAULT_FRANCHISES);
+        console.log('>>> Auto-seed complete.');
+    }
+}
+
 async function fetchAllPlayers() {
     // Fetch from the correctly seeded Player collection (new_enhanced)
     // Sorting by createdAt to maintain the sequencial order of pools
@@ -37,26 +66,95 @@ function generateRoomCode() {
     return Math.floor(100000 + Math.random() * 900000).toString();
 }
 
+// Utility to calculate which franchises are still available in a room
+function calculateAvailableTeams(allFranchises, takenTeams) {
+    const takenIds = (takenTeams || []).map(t => String(t.franchiseId));
+    return allFranchises.filter(f => !takenIds.includes(String(f._id)));
+}
+
+// Sync in-memory roomStates with DB on startup
+async function initializeRoomStates() {
+    try {
+        await ensureFranchisesSeeded(); // Guarantee franchise data exists
+        const activeRooms = await AuctionRoom.find({ status: { $ne: 'Finished' } });
+        const players = await fetchAllPlayers();
+        const dbFranchises = await Franchise.find();
+
+        activeRooms.forEach(room => {
+            if (!roomStates[room.roomId]) {
+                roomStates[room.roomId] = {
+                    roomCode: room.roomId,
+                    host: room.hostSocketId,
+                    hostName: room.franchisesInRoom?.[0]?.ownerName || 'Host',
+                    status: room.status,
+                    isPublic: room.isPublic || false,
+                    maxTeams: room.maxTeams || 10,
+                    players: players,
+                    currentIndex: room.currentPlayerIndex || 0,
+                    teams: room.franchisesInRoom || [],
+                    availableTeams: calculateAvailableTeams(dbFranchises, room.franchisesInRoom || []),
+                    currentBid: { amount: 0, teamId: null, teamName: null },
+                    timer: 0,
+                    timerDuration: 10,
+                    isReAuctionRound: false
+                };
+            }
+        });
+        console.log(`>>> Recovered ${activeRooms.length} active rooms from database.`);
+    } catch (err) {
+        console.error("Failed to initialize room states:", err);
+    }
+}
+
 const setupSocketHandlers = (io) => {
+    // Run initialization once
+    initializeRoomStates().then(() => {
+        // Broadcast recovered rooms once initialized
+        const allRooms = Object.values(roomStates).map(room => ({
+            roomCode: room.roomCode,
+            hostName: room.hostName,
+            teamCount: room.teams.length,
+            maxTeams: room.maxTeams || 10,
+            isPublic: room.isPublic,
+            status: room.status
+        }));
+        io.emit('public_rooms_list', allRooms);
+    });
+
+    // Helper to broadcast updated room list to all users in the lobby
+    const broadcastPublicRooms = () => {
+        const allRooms = Object.values(roomStates).map(room => ({
+            roomCode: room.roomCode,
+            hostName: room.hostName,
+            teamCount: room.teams.length,
+            maxTeams: room.maxTeams || 10,
+            isPublic: room.isPublic,
+            status: room.status
+        }));
+        console.log(`>>> Broadcasting ${allRooms.length} rooms to all clients.`);
+        io.emit('public_rooms_list', allRooms);
+    };
     io.on('connection', (socket) => {
         console.log(`User connected: ${socket.id}`);
 
-        // Create Room (Host)
-        socket.on('create_room', async ({ playerName }) => {
-            try {
-                const roomCode = generateRoomCode();
+        // Send initial room list on connection
+        broadcastPublicRooms();
 
-                // Fetch players from all pools and maintain pool order
+        // Create Room (Host)
+        socket.on('create_room', async ({ playerName, isPublic, maxTeams }) => {
+            try {
+                await ensureFranchisesSeeded(); // Guarantee franchise data exists
+                const roomCode = generateRoomCode();
                 const players = await fetchAllPlayers();
                 const playerIds = players.map(p => p._id);
-
-                // Fetch all 15 authentic IPL franchises
                 const dbFranchises = await Franchise.find();
 
                 const newRoom = new AuctionRoom({
                     roomId: roomCode,
                     hostSocketId: socket.id,
                     status: 'Lobby',
+                    isPublic: isPublic || false,
+                    maxTeams: maxTeams || 10,
                     unsoldPlayers: playerIds,
                     franchisesInRoom: [],
                     currentPlayerIndex: 0
@@ -64,6 +162,7 @@ const setupSocketHandlers = (io) => {
                 await newRoom.save();
 
                 socket.join(roomCode);
+                socket.roomCode = roomCode; // Keep track of room for disconnect handling
 
                 // Init high-performance memory state to prevent DB spam during fast bidding
                 roomStates[roomCode] = {
@@ -71,6 +170,8 @@ const setupSocketHandlers = (io) => {
                     host: socket.id,
                     hostName: playerName,
                     status: 'Lobby',
+                    isPublic: isPublic || false,
+                    maxTeams: maxTeams || 10,
                     players: players,
                     currentIndex: 0,
                     teams: [], // Empty initially, host must claim team from lobby
@@ -82,41 +183,63 @@ const setupSocketHandlers = (io) => {
                 };
 
                 socket.emit('room_created', { roomCode, state: roomStates[roomCode] });
+                
+                // Broadcast updated list to everyone in the lobby
+                broadcastPublicRooms();
             } catch (error) {
                 console.error(error);
                 socket.emit('error', 'Failed to create room');
             }
         });
 
+        socket.on('get_public_rooms', () => {
+            const allRooms = Object.values(roomStates)
+                .map(room => ({
+                    roomCode: room.roomCode,
+                    hostName: room.hostName,
+                    teamCount: room.teams.length,
+                    maxTeams: room.maxTeams || 10,
+                    isPublic: room.isPublic,
+                    status: room.status
+                }));
+            socket.emit('public_rooms_list', allRooms);
+        });
+
         // Join Room
-        socket.on('join_room', async ({ roomCode, playerName }) => {
+        socket.on('join_room', async ({ roomCode, playerName, isSpectator }) => {
             try {
                 const state = roomStates[roomCode];
                 if (!state) return socket.emit('error', 'Room not found or not active');
 
-                const existingTeam = state.teams.find(t => t.ownerName === playerName);
-                if (state.status !== 'Lobby' && !existingTeam) {
-                    return socket.emit('error', 'Auction already started. New players cannot join.');
+                const existingTeam = state.teams.find(t => t.ownerName.toLowerCase().trim() === playerName.toLowerCase().trim());
+                if (state.status !== 'Lobby' && !existingTeam && !isSpectator) {
+                    return socket.emit('error', 'Auction already started. New players cannot join as owners.');
                 }
 
                 socket.join(roomCode);
+                socket.roomCode = roomCode; // Keep track of room for disconnect handling
 
-                // Session Persistence: If a player with this name already claimed a team, re-link their socket
+                // Session Persistence: Re-link host if name matches
+                if (state.hostName === playerName) {
+                    console.log(`Re-linking Host: ${playerName} to Room: ${roomCode} (New Socket: ${socket.id})`);
+                    state.host = socket.id;
+                }
+
+                // Re-link team if they have claimed one
                 if (existingTeam) {
-                    console.log(`Re-linking ${playerName} to team ${existingTeam.teamName} (New Socket: ${socket.id})`);
+                    console.log(`Re-linking Owner: ${playerName} to team ${existingTeam.teamName} (New Socket: ${socket.id})`);
                     existingTeam.ownerSocketId = socket.id;
-
-                    // If the host is also this person, update host ID too
-                    // (Note: In a real app we'd use a better session ID, but for local testing this is great)
-                    if (state.hostName === playerName) {
-                        state.host = socket.id;
-                    }
-
+                    existingTeam.isOnline = true;
                     io.to(roomCode).emit('lobby_update', { teams: state.teams });
                 }
 
+                // Mark socket as spectator if requested
+                if (isSpectator) {
+                    socket.isSpectator = true;
+                }
+
                 // Do not assign team yet if they are new. Just let them in the lobby.
-                socket.emit('room_joined', { roomCode, state });
+                socket.emit('room_joined', { roomCode, state, isSpectator: !!isSpectator });
             } catch (error) {
                 console.error(error);
                 socket.emit('error', 'Failed to join room');
@@ -130,6 +253,17 @@ const setupSocketHandlers = (io) => {
             const state = roomStates[roomCode];
             if (!state) {
                 return socket.emit('error', 'Room not found or not active');
+            }
+
+            // ALWAYS ensure the socket is actively subscribed to the live broadcasts if they are fetching state
+            socket.join(roomCode);
+            socket.roomCode = roomCode;
+
+            // Robustness check: if this socket owns a team, ensure it's marked online
+            const team = state.teams.find(t => t.ownerSocketId === socket.id);
+            if (team && !team.isOnline) {
+                team.isOnline = true;
+                io.to(roomCode).emit('lobby_update', { teams: state.teams });
             }
 
             socket.emit('room_state_synced', { roomCode, state });
@@ -150,6 +284,10 @@ const setupSocketHandlers = (io) => {
                 const teamIndex = state.availableTeams.findIndex(t => t.shortName === teamId);
                 if (teamIndex === -1) return socket.emit('error', 'That franchise is already secured by another owner!');
 
+                if (state.teams.length >= (state.maxTeams || 10)) {
+                    return socket.emit('error', 'Room is full! You can only spectate.');
+                }
+
                 const assignedTeamDef = state.availableTeams.splice(teamIndex, 1)[0];
 
                 const newTeamObj = {
@@ -161,6 +299,7 @@ const setupSocketHandlers = (io) => {
                     ownerName: playerName,
                     currentPurse: assignedTeamDef.purseLimit,
                     overseasCount: 0,
+                    isOnline: true,
                     rtmUsed: false,
                     playersAcquired: []
                 };
@@ -168,11 +307,14 @@ const setupSocketHandlers = (io) => {
                 state.teams.push(newTeamObj);
 
                 // Broadcast updated list to everyone in lobby
+                socket.roomCode = roomCode; // Tracking for disconnect
                 io.to(roomCode).emit('lobby_update', { teams: state.teams });
                 io.to(roomCode).emit('available_teams', { teams: state.availableTeams });
 
-                // Acknowledge directly to the claiming user so they can stop their loading spinner
                 socket.emit('team_claimed_success');
+
+                // Broadcast updated list to everyone in the lobby
+                broadcastPublicRooms();
 
                 // Update authoritative DB state asynchronously
                 AuctionRoom.findOneAndUpdate({ roomId: roomCode }, { $push: { franchisesInRoom: newTeamObj } }).exec();
@@ -191,6 +333,9 @@ const setupSocketHandlers = (io) => {
 
             state.status = 'Auctioning';
             io.to(roomCode).emit('auction_started', { state });
+
+            // Broadcast room status change to lobby
+            broadcastPublicRooms();
 
             AuctionRoom.findOneAndUpdate({ roomId: roomCode }, { status: 'Auctioning' }).exec();
 
@@ -404,6 +549,16 @@ const setupSocketHandlers = (io) => {
 
         socket.on('disconnect', () => {
             console.log(`User disconnected: ${socket.id}`);
+            const roomCode = socket.roomCode;
+            if (roomCode && roomStates[roomCode]) {
+                const state = roomStates[roomCode];
+                const team = state.teams.find(t => t.ownerSocketId === socket.id);
+                if (team) {
+                    team.isOnline = false;
+                    // Broadcast that someone went offline
+                    io.to(roomCode).emit('lobby_update', { teams: state.teams });
+                }
+            }
         });
 
     });

@@ -3,8 +3,8 @@ const { MongoClient } = require('mongodb');
 const Player = require('../models/Player');
 require('dotenv').config();
 
-const ATLAS_URI = 'mongodb+srv://Mahesh:Mahi%40665@cluster0.rcy9qs6.mongodb.net/ipl';
-const LOCAL_URI = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/ipl-auction';
+const ATLAS_URI =  process.env.MONGO_URI;
+const LOCAL_URI = process.env.MONGO_URI;
 
 const basePrices = [20, 50, 75, 100, 150, 200];
 const forms = ['Excellent', 'Decent', 'Poor'];

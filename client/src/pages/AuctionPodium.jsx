@@ -2,6 +2,7 @@ import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react'
 import { useParams, useLocation, useNavigate } from 'react-router-dom';
 import { useSocket } from '../context/SocketContext';
 import { motion, AnimatePresence, useMotionValue, useSpring, useTransform } from 'framer-motion';
+import { Copy, Check } from 'lucide-react';
 import { ImAirplane } from "react-icons/im";
 import GavelSlam from '../components/GavelSlam';
 import { TeamList, BidHistory, ChatSection } from '../components/AuctionSubComponents';
@@ -23,6 +24,8 @@ const AuctionPodium = () => {
     const [soldEvent, setSoldEvent] = useState(null);
     const [isPaused, setIsPaused] = useState(false);
     const [activeTab, setActiveTab] = useState('podium'); // 'teams', 'podium', 'chat'
+    const [reconnectError, setReconnectError] = useState(false);
+    const [copied, setCopied] = useState(false);
 
     const [activeTeams, setActiveTeams] = useState(gameState?.teams || []);
     const [recentSold, setRecentSold] = useState([]); // Track last 10 sold players
@@ -52,38 +55,62 @@ const AuctionPodium = () => {
     // the podium mounts or a tab reconnects. This guarantees that
     // every client looking at the same room code sees the exact
     // same player and auction snapshot, even after refreshes.
+    // 1. Initial Sync & Recovery (Runs on mount/reconnect)
+    // 1. Initial Sync & Recovery (Runs on mount/reconnect)
     useEffect(() => {
         if (!socket || !roomCode) return;
 
-        const handleStateSynced = ({ state }) => {
-            if (!state) return;
-
+        const handleSync = ({ state }) => {
+            if (!state) {
+                setReconnectError(true);
+                return;
+            }
+            setReconnectError(false);
             setGameState(state);
             setActiveTeams(state.teams || []);
             setCurrentBid(state.currentBid || { amount: 0, teamId: null, teamName: null, teamColor: null });
-            setCurrentPlayer(
-                state.players && typeof state.currentIndex === 'number'
-                    ? state.players[state.currentIndex] || null
-                    : null
-            );
+            
+            if (state.players && typeof state.currentIndex === 'number') {
+                setCurrentPlayer(state.players[state.currentIndex] || null);
+            }
+            
             setIsPaused(state.status === 'Paused');
             setTimer(state.timer || state.timerDuration || 10);
 
+            // Re-link myTeam
             const linkedTeam = (state.teams || []).find(
                 t => t.ownerSocketId === socket.id || t.ownerName === playerName
             );
-            if (linkedTeam) {
-                setMyTeam(linkedTeam);
-            }
+            if (linkedTeam) setMyTeam(linkedTeam);
         };
 
-        socket.emit('request_room_state', { roomCode });
-        socket.on('room_state_synced', handleStateSynced);
+        const handleError = (msg) => {
+            console.error("Podium Sync Error:", msg);
+            if (!gameState) setReconnectError(true);
+        };
+
+        const handleConnect = () => {
+            socket.emit('request_room_state', { roomCode });
+            socket.emit('join_room', { roomCode, playerName });
+        };
+
+        socket.on('room_state_synced', handleSync);
+        socket.on('room_joined', handleSync);
+        socket.on('error', handleError);
+        socket.on('connect', handleConnect);
+
+        // Proactively request sync if already connected
+        if (socket.connected) {
+            handleConnect();
+        }
 
         return () => {
-            socket.off('room_state_synced', handleStateSynced);
+            socket.off('room_state_synced', handleSync);
+            socket.off('room_joined', handleSync);
+            socket.off('error', handleError);
+            socket.off('connect', handleConnect);
         };
-    }, [socket, roomCode, playerName]);
+    }, [socket, roomCode, playerName]); 
     const [bidHistory, setBidHistory] = useState([]);
     const [expandedTeamId, setExpandedTeamId] = useState(null);
     const [allSoldPlayers, setAllSoldPlayers] = useState([]); // { player, winningBid }
@@ -141,6 +168,64 @@ const AuctionPodium = () => {
         return { upcomingPoolName: upcoming, currentPoolTitle: current, playersInCurrentPool: currentPoolPlayers };
     }, [gameState, currentPlayer]);
 
+    const activeStats = useMemo(() => {
+        if (!currentPlayer) return [];
+        const role = currentPlayer.role?.toLowerCase() || '';
+        const s = currentPlayer.stats || {};
+        
+        if (role.includes('wicket') || role.includes('wk')) {
+            return [
+                { label: 'Matches', val: s.matches, color: 'text-white' },
+                { label: 'S.Rate', val: s.strikeRate, color: 'text-yellow-400' },
+                { label: 'Bat Avg', val: s.battingAvg, color: 'text-white' },
+                { label: 'Highest', val: s.highestScore, color: 'text-orange-400' },
+                { label: 'Runs', val: s.runs, color: 'text-blue-400' },
+                { label: 'Stumps', val: s.stumpings, color: 'text-teal-400' },
+                { label: 'Catches', val: s.catches, color: 'text-green-400' }
+            ];
+        }
+        
+        if (role.includes('batsman') || role.includes('batsmen') || role.includes('batting')) {
+            return [
+                { label: 'Matches', val: s.matches, color: 'text-white' },
+                { label: 'S.Rate', val: s.strikeRate, color: 'text-yellow-400' },
+                { label: 'Bat Avg', val: s.battingAvg, color: 'text-white' },
+                { label: 'Highest', val: s.highestScore, color: 'text-orange-400' },
+                { label: 'Runs', val: s.runs, color: 'text-blue-400' }
+            ];
+        }
+        
+        if (role.includes('bowler') || role.includes('bowling')) {
+            return [
+                { label: 'Economy', val: s.economy, color: 'text-pink-400' },
+                { label: 'Bowl Avg', val: s.bowlingAvg, color: 'text-purple-200' },
+                { label: 'Wickets', val: s.wickets, color: 'text-purple-400' },
+                { label: 'Matches', val: s.matches, color: 'text-white' },
+                { label: 'Best', val: s.bestBowling, color: 'text-indigo-400' }
+            ];
+        }
+        
+        if (role.includes('all-rounder') || role.includes('allround')) {
+            return [
+                { label: 'Matches', val: s.matches, color: 'text-white' },
+                { label: 'Runs', val: s.runs, color: 'text-blue-400' },
+                { label: 'S.Rate', val: s.strikeRate, color: 'text-yellow-400' },
+                { label: 'Highest', val: s.highestScore, color: 'text-orange-400' },
+                { label: 'Wickets', val: s.wickets, color: 'text-purple-400' },
+                { label: 'Economy', val: s.economy, color: 'text-pink-400' },
+                { label: 'Best', val: s.bestBowling, color: 'text-indigo-400' },
+                { label: 'Bat Avg', val: s.battingAvg, color: 'text-white' },
+                { label: 'Bowl Avg', val: s.bowlingAvg, color: 'text-purple-200' }
+            ];
+        }
+        
+        return [
+            { label: 'Matches', val: s.matches, color: 'text-white' },
+            { label: 'Runs', val: s.runs, color: 'text-blue-400' },
+            { label: 'Wickets', val: s.wickets, color: 'text-purple-400' }
+        ];
+    }, [currentPlayer]);
+
     // Scroll chat to bottom when new messages arrive
     useEffect(() => {
         chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -169,35 +254,23 @@ const AuctionPodium = () => {
         y.set(0);
     };
 
+    // 1b. Re-link myTeam locally whenever gameState changes
     useEffect(() => {
-        // --- Auto-Rejoin logic ---
-        if (!gameState && roomCode && playerName) {
-            console.log("Triggering auto-rejoin for", playerName);
-            socket.emit('join_room', { roomCode, playerName });
-        }
+        if (!socket || !gameState) return;
+        const team = (gameState.teams || []).find(t => t.ownerSocketId === socket.id || t.ownerName === playerName);
+        if (team) setMyTeam(team);
+    }, [gameState, socket, playerName]);
 
-        socket.on('room_joined', ({ state }) => {
-            console.log("Re-joined room, syncing state:", state);
-            setGameState(state);
-            setCurrentPlayer(state.players[state.currentIndex]);
-            setCurrentBid(state.currentBid);
-            setActiveTeams(state.teams);
-            setIsPaused(state.isPaused);
-            setTimer(state.timer || 10);
-        });
+    // 2. Live Auction Event Listeners
+    useEffect(() => {
+        if (!socket) return;
 
-        socket.on('lobby_update', ({ teams }) => {
+        const handleLobbyUpdate = ({ teams }) => {
             if (teams) {
                 setActiveTeams(teams);
                 setGameState(prev => prev ? { ...prev, teams } : null);
             }
-        });
-
-        if (!socket || !gameState) return;
-
-        // Use playerName as a persistent identifier for re-linking myTeam
-        const team = gameState.teams.find(t => t.ownerSocketId === socket.id || t.ownerName === playerName);
-        if (team) setMyTeam(team);
+        };
 
         const handleNewPlayer = ({ player, nextPlayers, timer }) => {
             setCurrentPlayer(player);
@@ -207,7 +280,8 @@ const AuctionPodium = () => {
             setBidHistory([]);
             setGameState(prev => {
                 if (!prev) return prev;
-                const idx = prev.players.findIndex(p => p._id === player._id);
+                const players = prev.players || [];
+                const idx = players.findIndex(p => p._id === player._id);
                 return idx >= 0 ? { ...prev, currentIndex: idx } : prev;
             });
             if (nextPlayers && nextPlayers.length > 0) {
@@ -265,6 +339,7 @@ const AuctionPodium = () => {
 
         const handleChatMessage = (msg) => setChatMessages(prev => [...prev, msg]);
 
+        socket.on('lobby_update', handleLobbyUpdate);
         socket.on('new_player', handleNewPlayer);
         socket.on('timer_tick', handleTimerTick);
         socket.on('bid_placed', handleBidPlaced);
@@ -277,8 +352,7 @@ const AuctionPodium = () => {
         socket.on('receive_chat_message', handleChatMessage);
 
         return () => {
-            // Use named references so ONLY this effect's handlers are removed.
-            // This preserves the stable tracking listeners in the dedicated useEffect below.
+            socket.off('lobby_update', handleLobbyUpdate);
             socket.off('new_player', handleNewPlayer);
             socket.off('timer_tick', handleTimerTick);
             socket.off('bid_placed', handleBidPlaced);
@@ -290,7 +364,7 @@ const AuctionPodium = () => {
             socket.off('kicked_from_room');
             socket.off('receive_chat_message', handleChatMessage);
         };
-    }, [socket, gameState, navigate, roomCode]);
+    }, [socket, navigate, roomCode]);
 
     // ─── Dedicated stable listeners for sold/unsold pool tracking ───
     // Kept in a separate effect with [] deps so they NEVER re-register
@@ -317,7 +391,17 @@ const AuctionPodium = () => {
     if (!gameState) return <div className="text-white flex items-center justify-center h-screen bg-darkBg">
         <div className="flex flex-col items-center">
             <div className="w-12 h-12 border-4 border-white/10 border-t-white rounded-full animate-spin mb-4"></div>
-            <p className="text-slate-400 font-bold tracking-widest uppercase text-xs">Authenticating Lobby...</p>
+            <p className="text-slate-400 font-bold tracking-widest uppercase text-xs">
+                {reconnectError ? "Room not found or session expired..." : "Authenticating Lobby..."}
+            </p>
+            {reconnectError && (
+                <button 
+                    onClick={() => navigate('/')}
+                    className="mt-6 px-6 py-2 bg-blue-600 hover:bg-blue-500 rounded-full text-[10px] font-black uppercase tracking-widest transition-all"
+                >
+                    Back to Lobby
+                </button>
+            )}
         </div>
     </div>;
 
@@ -337,6 +421,13 @@ const AuctionPodium = () => {
         if (!myTeam || timer <= 0 || soldEvent || isPaused) return;
         socket.emit('place_bid', { roomCode, amount: targetAmount });
     }, [myTeam, timer, soldEvent, isPaused, socket, roomCode, targetAmount]);
+
+    const handleCopyCode = () => {
+        if (!roomCode) return;
+        navigator.clipboard.writeText(roomCode);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+    };
 
     const handleSendMessage = useCallback((e) => {
         if (e && e.preventDefault) e.preventDefault();
@@ -362,6 +453,37 @@ const AuctionPodium = () => {
     let timerColor = '#00d2ff';
     if (timer <= 5) timerColor = '#ffcc33';
     if (timer <= 3) timerColor = '#ef4444';
+
+    const getShortRole = (role) => {
+        if (!role) return '';
+        const r = role.toLowerCase();
+        if (r.includes('all-rounder') || r.includes('all rounder')) return 'AR';
+        if (r.includes('bowler')) return 'Bowl';
+        if (r.includes('batsman') || r.includes('batter')) return 'Bat';
+        if (r.includes('wicket') || r.includes('keeper') || r.includes('wk')) return 'WK';
+        return role;
+    };
+
+    const getShortNation = (nation) => {
+        if (!nation) return '';
+        const n = nation.toLowerCase().trim();
+        const mapping = {
+            'india': 'IND',
+            'south africa': 'SA',
+            'england': 'ENG',
+            'australia': 'AUS',
+            'new zealand': 'NZ',
+            'sri lanka': 'SL',
+            'west indies': 'WI',
+            'pakistan': 'PAK',
+            'afghanistan': 'AFG',
+            'bangladesh': 'BAN',
+            'ireland': 'IRE',
+            'zimbabwe': 'ZIM',
+            'netherlands': 'NED',
+        };
+        return mapping[n] || nation.substring(0, 3).toUpperCase();
+    };
 
     return (
         <div className="h-[100dvh] w-full flex flex-col lg:flex-row bg-darkBg overflow-hidden text-white font-sans selection:bg-white/20 pt-safe pb-safe">
@@ -414,10 +536,8 @@ const AuctionPodium = () => {
 
                     <div className="flex-1 relative overflow-hidden h-full flex items-center">
                         <div className="flex whitespace-nowrap animate-ticker group-hover:pause">
-                            {/* Secondary copy for seamless loop */}
                             {[...Array(2)].map((_, loopIdx) => (
                                 <React.Fragment key={`loop-${loopIdx}`}>
-                                    {/* Recent Buys */}
                                     {recentSold.map((s, i) => (
                                         <div key={`recent-${loopIdx}-${i}`} className="inline-flex items-center mx-8">
                                             <span className="text-[8px] font-black text-blue-400 uppercase tracking-widest mr-2">RECENT:</span>
@@ -428,7 +548,6 @@ const AuctionPodium = () => {
                                         </div>
                                     ))}
 
-                                    {/* Top Buys */}
                                     {activeTeams.flatMap(t => t.playersAcquired.map(p => ({ ...p, team: t.teamName })))
                                         .sort((a, b) => b.boughtFor - a.boughtFor)
                                         .slice(0, 10)
@@ -443,12 +562,59 @@ const AuctionPodium = () => {
                                         ))}
                                 </React.Fragment>
                             ))}
-
-                            {/* Decorative Spacer */}
-                            {recentSold.length === 0 && activeTeams.length === 0 && (
-                                <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest mx-10">Waiting for first hammers...</span>
-                            )}
                         </div>
+                    </div>
+                </div>
+
+                {/* Sub-Header: Room Info & Host Controls (Moved below Highlights) */}
+                <div className="absolute top-8 left-0 right-0 h-8 lg:h-10 bg-black/30 backdrop-blur-sm border-b border-white/5 z-[90] flex items-center px-2 lg:px-6 gap-1.5 lg:gap-3">
+                    <button
+                        onClick={handleCopyCode}
+                        className="px-1.5 py-0.5 lg:px-3 lg:py-1 rounded-md bg-white/5 border border-white/10 text-[6px] lg:text-[9px] font-black uppercase tracking-widest text-slate-400 whitespace-nowrap flex items-center gap-1.5 hover:bg-white/10 transition-all active:scale-95"
+                        title="Copy Room Code"
+                    >
+                        Room: {roomCode}
+                        {copied ? <Check size={10} className="text-green-500" /> : <Copy size={10} />}
+                    </button>
+                    <div className="px-1.5 py-0.5 lg:px-3 lg:py-1 rounded-md border border-red-500/20 bg-red-500/5 text-red-500 text-[6px] lg:text-[9px] font-black uppercase tracking-widest flex items-center gap-1 lg:gap-1.5 whitespace-nowrap">
+                        <div className="w-1 h-1 lg:w-1.5 lg:h-1.5 bg-red-500 rounded-full animate-pulse"></div>
+                        Live
+                    </div>
+
+                    {/* Host Controls */}
+                    {(gameState?.host === socket?.id || (playerName && gameState?.hostName === playerName)) && (
+                        <div className="flex items-center gap-1 lg:gap-2">
+                            <button
+                                onClick={() => socket.emit(isPaused ? 'resume_auction' : 'pause_auction', { roomCode })}
+                                className={`px-2 py-0.5 lg:px-4 lg:py-1 rounded-md font-black uppercase tracking-widest text-[6px] lg:text-[9px] transition-all flex items-center justify-center gap-1 lg:gap-1.5 shadow-md ${isPaused ? 'bg-green-600 hover:bg-green-500 text-white' : 'bg-yellow-600/20 text-yellow-500 border border-yellow-500/30 backdrop-blur-md'}`}
+                            >
+                                {isPaused ? <span className="w-1 h-1 lg:w-1.5 lg:h-1.5 bg-white rounded-full"></span> : <span className="w-1 h-1 lg:w-1.5 lg:h-1.5 bg-yellow-500 rounded-full"></span>}
+                                {isPaused ? 'Resume' : 'Pause'}
+                            </button>
+                            <button
+                                onClick={() => {
+                                    if (window.confirm("End auction?")) {
+                                        socket.emit('force_end_auction', { roomCode });
+                                    }
+                                }}
+                                className="px-2 py-0.5 lg:px-4 lg:py-1 rounded-md bg-red-600/20 text-red-500 border border-red-500/30 backdrop-blur-md transition-all flex items-center justify-center gap-1 lg:gap-1.5 text-[6px] lg:text-[9px] font-black uppercase tracking-widest shadow-md hover:bg-red-600 hover:text-white"
+                            >
+                                End
+                            </button>
+                        </div>
+                    )}
+
+                    {/* Options Button (Hamburger) */}
+                    <div ref={optionsPopupRef} className="ml-auto flex items-center">
+                        <button
+                            onClick={() => setShowOptionsPopup(!showOptionsPopup)}
+                            className={`p-1 lg:px-3 lg:py-1.5 rounded-md transition-all flex flex-col justify-center items-center gap-[1.5px] lg:gap-[3px] border border-white/10 backdrop-blur-md shadow-lg ${showOptionsPopup ? 'bg-blue-600 border-blue-400' : 'bg-slate-800/40 hover:bg-slate-700'}`}
+                            title="Player Pools"
+                        >
+                            <div className="w-2.5 lg:w-4 h-[1px] lg:h-[2px] bg-white rounded-full"></div>
+                            <div className="w-2.5 lg:w-4 h-[1px] lg:h-[2px] bg-white rounded-full"></div>
+                            <div className="w-2.5 lg:w-4 h-[1px] lg:h-[2px] bg-white rounded-full"></div>
+                        </button>
                     </div>
                 </div>
 
@@ -695,18 +861,6 @@ const AuctionPodium = () => {
                     )}
                 </AnimatePresence>
 
-                {/* Options Button (Hamburger) */}
-                <div ref={optionsPopupRef} className="absolute top-10 lg:top-12 right-2 lg:right-6 xl:right-8 z-[120] flex flex-col items-end">
-                    <button
-                        onClick={() => setShowOptionsPopup(!showOptionsPopup)}
-                        className={`p-2 lg:px-3 lg:py-2.5 rounded-xl transition-all flex flex-col justify-center items-center gap-[3px] lg:gap-1 min-w-[36px] lg:min-w-[48px] border border-white/10 backdrop-blur-md shadow-lg ${showOptionsPopup ? 'bg-blue-600 border-blue-400' : 'bg-slate-800/80 hover:bg-slate-700'}`}
-                        title="Player Pools"
-                    >
-                        <div className="w-3.5 lg:w-5 h-[2px] lg:h-[3px] bg-white rounded-full"></div>
-                        <div className="w-3.5 lg:w-5 h-[2px] lg:h-[3px] bg-white rounded-full"></div>
-                        <div className="w-3.5 lg:w-5 h-[2px] lg:h-[3px] bg-white rounded-full"></div>
-                    </button>
-                </div>
 
 
 
@@ -722,171 +876,134 @@ const AuctionPodium = () => {
                                 <div className="text-sm xs:text-base lg:text-4xl font-black text-white/10 uppercase tracking-[0.3em] lg:tracking-[0.5em] animate-pulse">Preparing Podium...</div>
                             </motion.div>
                         ) : (
-                            <div className="flex flex-col lg:flex-row items-center lg:items-stretch w-full max-w-6xl gap-4 lg:gap-16 pb-12 lg:pb-16 pt-12 lg:pt-12">
-                                
-                                {/* Photo Section */}
-                                <div className="flex flex-col items-center lg:items-start shrink-0">
+                                <div className="flex flex-col lg:flex-row items-center justify-start lg:justify-center w-full max-w-7xl gap-4 lg:gap-4 xl:gap-[2vw] pb-6 lg:pb-4 pt-[77px] lg:pt-20 min-h-0 overflow-hidden">
                                     
-                                    {/* Lobby Info Header - Positioned Above Image on Desktop */}
-                                    <div className="absolute top-10 lg:static lg:mb-[11px] left-2 flex flex-col items-start gap-1.5 lg:gap-2 z-[120] w-fit">
-                                        <div className="flex flex-col lg:flex-row items-start lg:items-center gap-1.5 lg:gap-3">
-                                            <div className="px-2 lg:px-4 py-1 lg:py-1.5 rounded-full border border-white/10 glass-panel text-[7px] lg:text-[10px] font-black uppercase tracking-widest text-slate-400 whitespace-nowrap">
-                                                Room: {roomCode}
-                                            </div>
-                                            <div className="px-2 lg:px-4 py-1 lg:py-1.5 rounded-full border border-white/10 bg-red-500/10 text-red-500 text-[7px] lg:text-[10px] font-black uppercase tracking-widest flex items-center gap-1 lg:gap-2 whitespace-nowrap">
-                                                <div className="w-1 lg:w-1.5 h-1 lg:h-1.5 bg-red-500 rounded-full animate-pulse"></div>
-                                                Live Auction
-                                            </div>
-                                            {/* Host Controls - Pause/Resume NEXT TO Live Auction */}
-                                            {myTeam && myTeam.ownerSocketId === gameState?.host && (
-                                                <button
-                                                    onClick={() => socket.emit(isPaused ? 'resume_auction' : 'pause_auction', { roomCode })}
-                                                    className={`px-2 lg:px-4 py-1 lg:py-1.5 rounded-full transition-all flex items-center justify-center gap-1.5 whitespace-nowrap shadow-md ${isPaused ? 'bg-green-600/80 hover:bg-green-500 text-white shadow-[0_0_15px_rgba(34,197,94,0.4)]' : 'bg-yellow-600/30 hover:bg-yellow-500/40 text-yellow-500 border border-yellow-500/50 backdrop-blur-md'}`}
-                                                    title={isPaused ? "Resume Auction" : "Pause Auction"}
-                                                >
-                                                    <span className="text-[8px] lg:text-xs leading-none">{isPaused ? '▶️' : '⏸️'}</span>
-                                                    <span className="text-[6px] lg:text-[9px] font-black uppercase tracking-widest leading-none translate-y-[1px]">{isPaused ? 'Resume' : 'Pause'}</span>
-                                                </button>
-                                            )}
-                                        </div>
-                                    </div>
+                                    {/* Player Info Left & Photo Duo */}
+                                    <div className="flex items-center gap-2 lg:gap-8 shrink-0 relative">
+                                        
 
-                                    {/* Premium Player Card (Further Shrunk for Mobile) */}
-                                    <motion.div
-                                        key={currentPlayer._id}
-                                        layout
-                                        style={{ rotateX, rotateY, transformStyle: "preserve-3d" }}
-                                        onMouseMove={handleMouseMove}
-                                        onMouseLeave={handleMouseLeave}
-                                        initial={{ opacity: 0, scale: 0.9, y: 40 }}
-                                        animate={{ opacity: 1, scale: 1, y: 0 }}
-                                        exit={{ opacity: 0, scale: 0.9, y: -40 }}
-                                        transition={{ type: "spring", stiffness: 300, damping: 25, mass: 1 }}
-                                        className="w-[120px] xs:w-[140px] sm:w-[180px] lg:w-[380px] aspect-[3/4.5] glass-card rounded-[16px] lg:rounded-[32px] relative overflow-hidden group shadow-[0_15px_35px_rgba(0,0,0,0.6)] border border-white/10 shrink-0 flex flex-col bg-slate-900"
-                                    >
-                                        {/* Image Section */}
-                                        <div className="relative h-full w-full overflow-hidden">
-                                            <motion.img
-                                                initial={{ scale: 1.1 }}
-                                                animate={{ scale: 1 }}
-                                                transition={{ duration: 0.8 }}
-                                                src={currentPlayer.image_path || currentPlayer.imagepath || currentPlayer.photoUrl || 'https://via.placeholder.com/400x600?text=No+Photo'}
-                                                alt={currentPlayer.player || currentPlayer.name || 'Player'}
-                                                className="w-full h-full object-cover object-top"
-                                            />
-                                            
-                                            {/* Overlays */}
-                                            <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-transparent to-transparent opacity-80"></div>
-                                            
-                                            {/* Premium Name Text */}
-                                            <div className="absolute bottom-4 lg:bottom-16 left-2 lg:left-8 z-20">
-                                                <h1 className="text-[10px] xs:text-xs lg:text-5xl font-black italic tracking-tighter leading-none text-white uppercase drop-shadow-[0_4px_10px_rgba(0,0,0,0.7)]">
-                                                    {(currentPlayer.player || currentPlayer.name || 'Unknown').split(' ').map((n, i) => (
-                                                        <span key={i} className="block">{n}</span>
-                                                    ))}
-                                                </h1>
-                                            </div>
-
-                                            {/* Sub-info Box */}
-                                            <div className="absolute bottom-1 lg:bottom-8 left-2 lg:left-8 flex gap-1.5 lg:gap-6 pr-2 lg:pr-8 border-t border-white/10 pt-1 lg:pt-4 w-[calc(100%-16px)] lg:w-[calc(100%-64px)]">
-                                                <div className="text-left">
-                                                    <div className="text-[5px] lg:text-[11px] text-slate-500 font-black uppercase tracking-widest leading-none mb-0.5">Role</div>
-                                                    <div className="text-[7px] lg:text-sm font-black text-white truncate max-w-[35px] lg:max-w-none">{currentPlayer.role || 'Player'}</div>
-                                                </div>
-                                                <div className="h-3 lg:h-8 w-px bg-white/10"></div>
-                                                <div className="text-left">
-                                                    <div className="text-[5px] lg:text-[11px] text-slate-500 font-black uppercase tracking-widest leading-none mb-0.5">Nation</div>
-                                                    <div className="text-[7px] lg:text-sm font-black text-white flex items-center gap-1">
-                                                        {currentPlayer.nationality || 'IND'}
-                                                        {currentPlayer.isOverseas && <ImAirplane className="text-blue-400 -rotate-45" size={10} />}
+                                        {/* Premium Player Card (Further Shrunk) */}
+                                        <motion.div
+                                            key={currentPlayer._id}
+                                            layout
+                                            style={{ rotateX, rotateY, transformStyle: "preserve-3d" }}
+                                            onMouseMove={handleMouseMove}
+                                            onMouseLeave={handleMouseLeave}
+                                            initial={{ opacity: 0, scale: 0.9, y: 40 }}
+                                            animate={{ opacity: 1, scale: 1, y: 0 }}
+                                            exit={{ opacity: 0, scale: 0.9, y: -40 }}
+                                            transition={{ type: "spring", stiffness: 300, damping: 25, mass: 1 }}
+                                            className="w-[173px] xs:w-[213px] sm:w-[273px] lg:w-[min(340px,35vh)] xl:w-[min(420px,40vh)] aspect-[3/4.2] glass-card rounded-[14px] lg:rounded-[24px] relative overflow-hidden group shadow-[0_15px_35px_rgba(0,0,0,0.6)] border border-white/10 shrink-0 flex flex-col bg-slate-900"
+                                        >
+                                            {/* Image Section */}
+                                            <div className="relative h-full w-full overflow-hidden">
+                                                <motion.img
+                                                    initial={{ scale: 1.1 }}
+                                                    animate={{ scale: 1 }}
+                                                    transition={{ duration: 0.8 }}
+                                                    src={currentPlayer.image_path || currentPlayer.imagepath || currentPlayer.photoUrl || 'https://via.placeholder.com/400x600?text=No+Photo'}
+                                                    alt={currentPlayer.player || currentPlayer.name || 'Player'}
+                                                    className="w-full h-full object-cover object-top"
+                                                />
+                                                
+                                                {/* Overlays */}
+                                                <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-transparent to-transparent opacity-80"></div>
+                                                
+                                                {/* Name & Sub-info Container (Combined) */}
+                                                <div className="absolute bottom-3 lg:bottom-12 left-1.5 lg:left-4 right-1.5 lg:right-4 z-20 flex flex-col items-start px-1 lg:px-0">
+                                                    <h1 className="text-[16px] xs:text-[18px] lg:text-[14px] font-black italic tracking-tighter leading-none text-white uppercase drop-shadow-[0_4px_10px_rgba(0,0,0,0.7)] mb-1">
+                                                        {(currentPlayer.player || currentPlayer.name || 'Unknown').split(' ').map((n, i) => (
+                                                            <span key={i} className="block">{n}</span>
+                                                        ))}
+                                                    </h1>
+                                                    
+                                                    <div className="flex flex-row items-center gap-1.5 lg:gap-3 text-white/80 drop-shadow-md">
+                                                        <div className="text-[6px] lg:text-[11px] font-black uppercase tracking-widest">{getShortRole(currentPlayer.role)}</div>
+                                                        <div className="h-1.5 lg:h-2.5 w-px bg-white/20"></div>
+                                                        <div className="text-[6px] lg:text-[11px] font-black uppercase tracking-widest flex items-center gap-0.5 lg:gap-1">
+                                                            <span>{getShortNation(currentPlayer.nationality)}</span>
+                                                            {currentPlayer.isOverseas && <ImAirplane className="text-blue-400/80 -rotate-45" size={window.innerWidth < 1024 ? 4 : 7} />}
+                                                        </div>
                                                     </div>
                                                 </div>
                                             </div>
-                                        </div>
-                                    </motion.div>
-                                </div>
-
-                                {/* Stats & Bidding Arena */}
-                                <div className="flex-1 flex flex-col justify-center w-full min-w-0 px-2 lg:px-0">
-                                    {/* Responsive Stats Grid – tuned for mobile like reference design */}
-                                    <div className="grid grid-cols-3 xs:grid-cols-3 sm:grid-cols-4 lg:grid-cols-4 justify-center lg:justify-start gap-1.5 lg:gap-3 mb-3 lg:mb-10 mt-2 lg:mt-0">
-                                        {[
-                                            { label: 'Matches', val: currentPlayer.stats?.matches, color: 'text-white' },
-                                            { label: 'Runs', val: currentPlayer.stats?.runs, color: 'text-blue-400' },
-                                            { label: 'Bat Avg', val: currentPlayer.stats?.battingAvg, color: 'text-blue-100' },
-                                            { label: 'S.Rate', val: currentPlayer.stats?.strikeRate, color: 'text-yellow-500' },
-                                            { label: 'Wickets', val: currentPlayer.stats?.wickets, color: 'text-purple-400' },
-                                            { label: 'Economy', val: currentPlayer.stats?.economy, color: 'text-pink-400' },
-                                            { label: 'Bowl Avg', val: currentPlayer.stats?.bowlingAvg, color: 'text-purple-300' }
-                                        ].map((stat, idx) => (
-                                            <div
-                                                key={idx}
-                                                className="h-[40px] xs:h-[48px] lg:h-[100px] glass-panel rounded-lg lg:rounded-2xl border-white/5 bg-slate-900/40 flex flex-col items-center justify-center text-center shadow-lg transition-transform active:scale-95"
-                                            >
-                                                <div className="text-[6px] xs:text-[7px] lg:text-[12px] text-slate-500 font-black uppercase tracking-widest leading-none mb-0.5 lg:mb-2">
-                                                    {stat.label}
-                                                </div>
-                                                <div className={`text-[10px] xs:text-xs lg:text-3xl font-black font-mono leading-none ${stat.color}`}>
-                                                    {stat.val || 0}
-                                                </div>
-                                            </div>
-                                        ))}
+                                        </motion.div>
                                     </div>
 
-                                    {/* Bidding Core (Shrunk for Mobile) */}
-                                    <div className="flex items-center justify-between gap-3 lg:gap-8 bg-black/40 lg:bg-transparent p-2.5 lg:p-0 rounded-xl lg:rounded-none border border-white/5 lg:border-none">
-                                        <div className="flex-1">
-                                            <div className="text-[7px] lg:text-[9px] text-slate-400 font-black uppercase tracking-widest mb-1 lg:mb-2">Current Bid</div>
-                                            <div className="flex items-baseline gap-1.5">
+                                {/* Stats & Bidding Arena */}
+                                <div className="flex-1 flex flex-col justify-center w-full min-w-0 px-2 lg:px-0 lg:-mt-6">
+                                    {/* Responsive Stats Grid – matching Image 2 (3-column grid on mobile) */}
+                                    <div className="grid grid-cols-3 lg:grid-cols-4 gap-1 lg:gap-1.5 justify-center lg:justify-start mb-2 lg:mb-4 mt-2 lg:mt-0 max-h-[25vh] lg:max-h-none overflow-y-auto lg:overflow-visible pr-1">
+                                        {activeStats.map((stat, idx) => (
+                                             <div
+                                                 key={idx}
+                                                 className={`h-[28px] xs:h-[36px] lg:h-[min(55px,8vh)] rounded-lg lg:rounded-[10px] border border-white/10 bg-white/5 flex flex-col items-center justify-center px-1.5 lg:px-3 xl:px-4 shadow-2xl backdrop-blur-md transition-all hover:bg-white/10 active:scale-95 
+                                                     ${idx === activeStats.length - 1 && activeStats.length % 3 !== 0 ? 'col-start-2 lg:col-start-auto' : ''}`}
+                                             >
+                                                 <div className="text-[5px] xs:text-[6px] lg:text-[8px] text-slate-500 font-black uppercase tracking-[0.1em] lg:tracking-[0.15em] leading-none mb-0.5 lg:mb-1">
+                                                     {stat.label}
+                                                 </div>
+                                                 <div className={`text-[9px] xs:text-[11px] lg:text-[18px] font-black font-mono leading-none ${stat.color}`}>
+                                                     {stat.val || 0}
+                                                 </div>
+                                             </div>
+                                         ))}
+                                     </div>
+
+                                    {/* Bidding Core (Optimized for Image 2 parity) */}
+                                    <div className="flex flex-row lg:flex-col items-center lg:items-start justify-between lg:justify-start gap-2 lg:gap-4 bg-black/40 lg:bg-transparent p-3 lg:p-0 rounded-xl lg:rounded-none border border-white/10 lg:border-none shadow-2xl lg:shadow-none">
+                                        <div className="flex-1 lg:flex-none w-full">
+                                            <div className="text-[8px] lg:text-[10px] text-slate-500 font-black uppercase tracking-[0.25em] mb-1 lg:mb-2 text-left">CURRENT BID</div>
+                                            <div className="flex items-baseline gap-2 lg:gap-3">
                                                 <motion.span
                                                     key={currentBid.amount}
                                                     initial={{ scale: 1.5, opacity: 0 }}
                                                     animate={{ scale: 1, opacity: 1 }}
-                                                    className="text-2xl xs:text-3xl lg:text-7xl font-black font-mono tracking-tighter"
-                                                    style={{ color: currentBid.teamColor || 'white' }}
+                                                    className="text-xl xs:text-2xl lg:text-[min(2.5rem,4vh)] xl:text-[3rem] font-black font-mono tracking-tighter leading-none"
+                                                    style={{ color: 'white' }}
                                                 >
                                                     ₹{currentBid.amount === 0 ? (currentPlayer.basePrice || 50) : currentBid.amount}
                                                 </motion.span>
-                                                <span className="text-sm lg:text-2xl font-black text-slate-500">L</span>
+                                                <span className="text-[10px] lg:text-lg font-black text-slate-500 font-mono">L</span>
                                             </div>
                                             
                                             {currentBid.teamName ? (
                                                 <motion.div
                                                     initial={{ opacity: 0, x: -10 }}
                                                     animate={{ opacity: 1, x: 0 }}
-                                                    className="mt-0.5 lg:mt-2 flex flex-col items-start gap-0.5 lg:gap-1"
+                                                    className="mt-1 lg:mt-2 flex items-center gap-2"
                                                 >
-                                                    <div className="text-[8px] lg:text-sm font-bold uppercase tracking-widest flex items-center gap-1.5" style={{ color: currentBid.teamColor }}>
-                                                        <span className="w-1 h-1 lg:w-1.5 lg:h-1.5 rounded-full bg-current animate-ping"></span>
-                                                        {currentBid.teamName} Leading
+                                                    <div className="px-2 lg:px-2.5 py-0.5 lg:py-1 rounded bg-white/5 border border-white/10 text-[8px] lg:text-[11px] font-bold uppercase tracking-widest flex items-center gap-1.5 max-w-[120px] lg:max-w-none" style={{ color: currentBid.teamColor }}>
+                                                        <span className="w-1.5 h-1.5 lg:w-1.5 lg:h-1.5 rounded-full bg-current animate-pulse shrink-0"></span>
+                                                        <span className="truncate">{currentBid.teamName}</span>
                                                     </div>
                                                 </motion.div>
                                             ) : (
-                                                <div className="mt-0.5 lg:mt-2 text-[8px] lg:text-sm font-bold uppercase tracking-widest text-slate-600 italic leading-none">@ Base</div>
+                                                <div className="mt-1 lg:mt-2 text-[9px] lg:text-sm font-black uppercase tracking-[0.2em] text-slate-600 italic leading-none">@ Base Price</div>
                                             )}
                                         </div>
 
-                                        {/* Timer Circle (Shrunk for Mobile) */}
-                                        <div className="relative w-14 lg:w-32 h-14 lg:h-32 flex items-center justify-center shrink-0">
+                                        {/* Timer Circle (Shrunk) */}
+                                        <div className="relative w-12 lg:w-[min(65px,8vh)] xl:w-[min(75px,9vh)] h-12 lg:h-[min(65px,8vh)] xl:h-[min(75px,9vh)] flex items-center justify-center shrink-0 mt-0 lg:mt-6 lg:ml-12 xl:ml-20">
                                             {!soldEvent ? (
                                                 <>
                                                     <svg className="w-full h-full transform -rotate-90 absolute">
-                                                        <circle cx="50%" cy="50%" r="40%" fill="transparent" stroke="rgba(255,255,255,0.05)" strokeWidth="4 lg:strokeWidth-6" />
+                                                        <circle cx="50%" cy="50%" r="40%" fill="transparent" stroke="rgba(255,255,255,0.05)" strokeWidth="3 lg:strokeWidth-6" />
                                                         <motion.circle
                                                             cx="50%" cy="50%" r="40%"
                                                             fill="transparent"
                                                             stroke={timerColor}
-                                                            strokeWidth="4 lg:strokeWidth-6"
+                                                            strokeWidth="3 lg:strokeWidth-6"
                                                             strokeLinecap="round"
                                                             strokeDasharray="251.2%"
                                                             animate={{ strokeDashoffset: `${timerDashoffset}%`, stroke: timerColor }}
-                                                            className="drop-shadow-[0_0_8px_currentColor] lg:drop-shadow-[0_0_15px_currentColor]"
+                                                            className="drop-shadow-[0_0_10px_currentColor] lg:drop-shadow-[0_0_15px_currentColor]"
                                                         />
                                                     </svg>
                                                     <motion.div
                                                         key={`timer-${timer}`}
-                                                        animate={timer <= 3 ? { scale: [1, 1.2, 1] } : {}}
-                                                        className="text-lg lg:text-4xl font-black font-mono z-10"
+                                                        animate={timer <= 3 ? { scale: [1, 1.3, 1] } : {}}
+                                                        className="text-lg lg:text-2xl xl:text-3xl font-black font-mono z-10"
                                                         style={{ color: timerColor }}
                                                     >
                                                         {timer}
@@ -913,9 +1030,9 @@ const AuctionPodium = () => {
                 </div>
 
                 {/* Bottom Interaction Bar (Responsive) */}
-                 {/* Bottom Interaction Bar (Responsive) */}
-                <div className="h-[75px] lg:h-32 glass-panel border-t border-white/5 flex items-center justify-between px-3 lg:px-12 z-20 backdrop-blur-3xl shrink-0">
-                    <div className="flex items-center gap-2 lg:gap-6">
+                {/* Bottom Interaction Bar (Responsive) */}
+                <div className="h-[75px] lg:h-[min(128px,14vh)] glass-panel border-t border-white/5 flex items-center justify-between pl-3 pr-4 lg:pl-8 lg:pr-8 z-20 backdrop-blur-3xl shrink-0 relative">
+                    <div className="flex items-center gap-2 lg:gap-4 flex-1 min-w-0">
                         {myTeam && (
                             <div className="flex items-center gap-2 lg:gap-5">
                                 <div className="w-0.5 lg:w-2 h-8 lg:h-16 rounded-full" style={{ backgroundColor: myTeam.teamThemeColor }}></div>
@@ -924,32 +1041,34 @@ const AuctionPodium = () => {
                                         <img src={myTeam.teamLogo} alt={myTeam.teamName} className="w-full h-full object-contain drop-shadow-md" />
                                     </div>
                                 )}
-                                <div className="flex flex-col justify-center translate-y-0.5 max-w-[100px] lg:max-w-none">
-                                    <div className="text-[6px] lg:text-[10px] text-slate-500 font-black uppercase tracking-[0.2em] mb-0.5 lg:mb-1">Signed As</div>
-                                    <div className="text-[10px] lg:text-2xl font-black tracking-tight uppercase leading-none truncate" style={{ color: myTeam.teamThemeColor }}>{myTeam.teamName}</div>
-                                    <div className="text-[7px] lg:text-xs font-bold text-slate-400 uppercase tracking-[0.15em] mt-0.5 lg:mt-1.5 truncate">₹{myTeam.currentPurse}L</div>
+                                <div className="flex flex-col justify-center translate-y-0.5 max-w-[120px] lg:max-w-none">
+                                    <div className="text-[5px] lg:text-[9px] text-slate-500 font-black uppercase tracking-[0.2em] mb-0.5 lg:mb-1">Signed As</div>
+                                    <div className="text-[8px] lg:text-lg font-black tracking-tight uppercase leading-none truncate" style={{ color: myTeam.teamThemeColor }}>{myTeam.teamName}</div>
+                                    <div className="text-[6px] lg:text-[10px] font-bold text-slate-400 uppercase tracking-[0.15em] mt-0.5 lg:mt-1 truncate">₹{myTeam.currentPurse}L</div>
                                 </div>
                             </div>
                         )}
                     </div>
 
-                    <div className="flex items-center gap-3 lg:gap-8">
+                    <div className="flex items-center gap-3 lg:gap-8 mr-16 lg:mr-32 shrink-0">
                         <div className="text-right flex flex-col items-end">
                             <div className="text-[6px] lg:text-[10px] text-slate-500 font-black uppercase tracking-widest mb-0.5 lg:mb-1">Next Bid</div>
                             <div className="text-lg lg:text-3xl font-black font-mono text-white tracking-tighter leading-none">₹{targetAmount}L</div>
                         </div>
+                    </div>
 
-                        {/* Responsive Bid Paddle */}
-                        <button
-                            onClick={handleBid}
-                            disabled={!myTeam || timer <= 0 || soldEvent || targetAmount > (myTeam?.currentPurse || 0) || currentBid.teamId === myTeam?.franchiseId || myTeam?.playersAcquired?.length >= 25 || (currentPlayer?.isOverseas && (myTeam?.overseasCount || 0) >= 8)}
-                            className={`
-                                relative flex items-center justify-center w-14 lg:w-32 h-20 lg:h-44 ml-1 lg:ml-10 -mt-8 lg:-mt-4 outline-none
-                                ${(!myTeam || timer <= 0 || soldEvent || targetAmount > (myTeam?.currentPurse || 0) || currentBid.teamId === myTeam?.franchiseId || isPaused || myTeam?.playersAcquired?.length >= 25 || (currentPlayer?.isOverseas && (myTeam?.overseasCount || 0) >= 8))
-                                    ? 'opacity-30 grayscale cursor-not-allowed'
-                                    : 'cursor-pointer'}
-                            `}
-                        >
+                    {/* Responsive Bid Paddle - Absolutely Positioned */}
+                    <button
+                        onClick={handleBid}
+                        disabled={!myTeam || timer <= 0 || soldEvent || targetAmount > (myTeam?.currentPurse || 0) || currentBid.teamId === myTeam?.franchiseId || myTeam?.playersAcquired?.length >= 25 || (currentPlayer?.isOverseas && (myTeam?.overseasCount || 0) >= 8)}
+                        className={`
+                            absolute right-2 lg:right-[4rem] bottom-[5px] lg:bottom-[20px] z-[60]
+                            flex items-center justify-center w-14 lg:w-24 h-20 lg:h-32 outline-none
+                            ${(!myTeam || timer <= 0 || soldEvent || targetAmount > (myTeam?.currentPurse || 0) || currentBid.teamId === myTeam?.franchiseId || isPaused || myTeam?.playersAcquired?.length >= 25 || (currentPlayer?.isOverseas && (myTeam?.overseasCount || 0) >= 8))
+                                ? 'opacity-30 grayscale cursor-not-allowed'
+                                : 'cursor-pointer'}
+                        `}
+                    >
                             {/* Wooden Handle */}
                             <div
                                 className="absolute bottom-0 w-2 lg:w-6 h-8 lg:h-20 rounded-b-sm lg:rounded-b-md shadow-[inset_0_0_10px_rgba(0,0,0,0.8)] z-0"
@@ -979,7 +1098,6 @@ const AuctionPodium = () => {
                                 </div>
                             </div>
                         </button>
-                    </div>
                 </div>
 
                 {/* Fullscreen Overlay Removed, Stamp injected in Timer container */}
@@ -1025,30 +1143,30 @@ const AuctionPodium = () => {
             </AnimatePresence>
 
             {/* Mobile Navigation Bar */}
-            <div className="lg:hidden h-20 glass-panel border-t border-white/10 flex items-center justify-around px-4 z-[100] pb-safe shrink-0">
+            <div className="lg:hidden h-14 glass-panel border-t border-white/10 flex items-center justify-around px-4 z-[100] pb-safe shrink-0">
                 <button
                     onClick={() => setActiveTab('teams')}
-                    className={`flex flex-col items-center gap-1 transition-all ${activeTab === 'teams' ? 'text-blue-400 scale-110' : 'text-slate-500'}`}
+                    className={`flex flex-col items-center gap-0.5 transition-all ${activeTab === 'teams' ? 'text-blue-400 scale-105' : 'text-slate-500'}`}
                 >
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><path d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" /></svg>
-                    <span className="text-[8px] font-black uppercase tracking-widest">Teams</span>
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><path d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" /></svg>
+                    <span className="text-[7px] font-black uppercase tracking-widest">Teams</span>
                 </button>
                 <button
                     onClick={() => setActiveTab('podium')}
-                    className={`flex flex-col items-center gap-1 transition-all ${activeTab === 'podium' ? 'text-blue-400 scale-110' : 'text-slate-500'}`}
+                    className={`flex flex-col items-center gap-0.5 transition-all ${activeTab === 'podium' ? 'text-blue-400 scale-105' : 'text-slate-500'}`}
                 >
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><path d="M7 21a4 4 0 01-4-4V5a2 2 0 012-2h4a2 2 0 012 2v12a4 4 0 01-4 4zm0 0h12a2 2 0 002-2v-4a2 2 0 00-2-2h-3" /></svg>
-                    <span className="text-[8px] font-black uppercase tracking-widest">Podium</span>
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><path d="M7 21a4 4 0 01-4-4V5a2 2 0 012-2h4a2 2 0 012 2v12a4 4 0 01-4 4zm0 0h12a2 2 0 002-2v-4a2 2 0 00-2-2h-3" /></svg>
+                    <span className="text-[7px] font-black uppercase tracking-widest">Podium</span>
                 </button>
                 <button
                     onClick={() => setActiveTab('chat')}
-                    className={`flex flex-col items-center gap-1 transition-all ${activeTab === 'chat' ? 'text-blue-400 scale-110' : 'text-slate-500'}`}
+                    className={`flex flex-col items-center gap-0.5 transition-all ${activeTab === 'chat' ? 'text-blue-400 scale-105' : 'text-slate-500'}`}
                 >
                     <div className="relative">
-                        <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><path d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z" /></svg>
-                        {chatMessages.length > 0 && <div className="absolute -top-1 -right-1 w-2 h-2 bg-blue-500 rounded-full animate-ping"></div>}
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><path d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z" /></svg>
+                        {chatMessages.length > 0 && <div className="absolute -top-1 -right-1 w-1.5 h-1.5 bg-blue-500 rounded-full animate-ping"></div>}
                     </div>
-                    <span className="text-[8px] font-black uppercase tracking-widest">Chat</span>
+                    <span className="text-[7px] font-black uppercase tracking-widest">Chat</span>
                 </button>
             </div>
 

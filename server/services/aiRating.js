@@ -1,6 +1,19 @@
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
+const extractJSON = (text) => {
+    try {
+        const jsonMatch = text.match(/\{[\s\S]*\}|\[[\s\S]*\]/);
+        if (jsonMatch) {
+            return JSON.parse(jsonMatch[0].replace(/```json/g, '').replace(/```/g, '').trim());
+        }
+        return JSON.parse(text);
+    } catch (e) {
+        console.error("Failed to parse AI JSON:", e, "Original text:", text);
+        throw e;
+    }
+};
+
 const evaluateTeam = async (team) => {
     const model = genAI.getGenerativeModel({ model: 'gemini-flash-latest' });
 
@@ -14,7 +27,8 @@ Budget Remaining: ₹${team.currentPurse || team.budgetRemaining}L
 Drafted Squad (Total Players: ${team.playersAcquired.length}):
 ${team.playersAcquired.map(p => {
         const s = p.stats || {};
-        return `- ${p.name || 'Unknown'} (${p.role}, ${p.nationality}) | Matches: ${s.matches}, Runs: ${s.runs}, SR: ${s.strikeRate}, Wickets: ${s.wickets}, Econ: ${s.economy} | Price: ₹${p.boughtFor}L`;
+        const role = p.role || 'Unknown';
+        return `- ${p.name || 'Unknown'} (${role}, ${p.nationality || 'Local'}) | Matches: ${s.matches || 0}, Runs: ${s.runs || 0}, SR: ${s.strikeRate || 0}, Wickets: ${s.wickets || 0}, Econ: ${s.economy || 0} | Price: ₹${p.boughtFor || 0}L`;
     }).join('\n')}
 
 DIRECTIONS FOR EVALUATION:
@@ -43,13 +57,9 @@ No other text. Be an expert, be rude, be accurate.
     try {
         console.log(`--- AI Evaluation Starting for ${team.teamName} ---`);
         const result = await model.generateContent(prompt);
-        const response = await result.response;
-        const text = response.text();
+        const text = result.response.text();
         console.log(`--- AI Response received for ${team.teamName} ---`);
-        console.log("RAW AI TEXT:", text);
-        // Clean JSON formatting if Gemini adds markdown codeblocks
-        const cleanedText = text.replace(/```json/g, '').replace(/```/g, '').trim();
-        return JSON.parse(cleanedText);
+        return extractJSON(text);
     } catch (error) {
         console.error('Error in AI evaluation:', error);
         return {
@@ -113,10 +123,8 @@ No other text. Strictly return a JSON array of strings.
 
     try {
         const result = await model.generateContent(prompt);
-        const response = await result.response;
-        const text = response.text();
-        const cleanedText = text.replace(/```json/g, '').replace(/```/g, '').trim();
-        const selectedIds = JSON.parse(cleanedText);
+        const text = result.response.text();
+        const selectedIds = extractJSON(text);
 
         if (Array.isArray(selectedIds) && selectedIds.length > 0) {
             return selectedIds;
@@ -198,8 +206,7 @@ RESPOND ONLY WITH A VALID JSON ARRAY of objects:
         console.log(`--- Master Ranker Starting ---`);
         const result = await model.generateContent(prompt);
         const text = result.response.text();
-        const cleanedText = text.replace(/```json/g, '').replace(/```/g, '').trim();
-        const rankings = JSON.parse(cleanedText);
+        const rankings = extractJSON(text);
 
         // Map rankings back to full data
         return evaluations.map(team => {

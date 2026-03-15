@@ -12,7 +12,9 @@ export const SocketProvider = ({ children }) => {
 
     useEffect(() => {
         // Connect to the backend server
-        const newSocket = io(import.meta.env.VITE_API_URL || 'http://localhost:5050');
+        const newSocket = io(import.meta.env.VITE_API_URL || 'http://localhost:5050', {
+            transports: ['websocket', 'polling']
+        });
         setSocket(newSocket);
 
         return () => newSocket.close();

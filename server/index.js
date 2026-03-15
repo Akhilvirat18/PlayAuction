@@ -28,7 +28,8 @@ const io = new Server(server, {
     cors: {
         origin: '*', // For dev, allow all
         methods: ['GET', 'POST']
-    }
+    },
+    transports: ['websocket', 'polling'] // Explicitly allow both for proxies like Render
 });
 
 setupSocketHandlers(io);
@@ -39,9 +40,15 @@ app.get('/', (req, res) => {
     res.send('IPL Auction Server API is running');
 });
 
+app.get('/ping', (req, res) => {
+    res.send('pong');
+});
+
 // Start listening
 const PORT = process.env.PORT || 5000;
-server.listen(PORT, console.log(`Server running on port ${PORT}`));
+server.listen(PORT, () => {
+    console.log(`✅ Server running on port ${PORT}`);
+});
 
 // Export io so it can be used in socket handlers
 module.exports = { io };

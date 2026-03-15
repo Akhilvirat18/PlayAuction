@@ -11,6 +11,7 @@ const connectDB = async () => {
         console.log(`✅ Cloud MongoDB Connected: ${conn.connection.host}`);
     } catch (err) {
         console.error(`💥 Cloud MongoDB Error: ${err.message}`);
+        console.error('👉 Tip: Check if MONGO_URI is correctly set in Render Environment Variables.');
         process.exit(1);
     }
 };

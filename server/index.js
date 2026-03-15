@@ -52,3 +52,14 @@ server.listen(PORT, () => {
 
 // Export io so it can be used in socket handlers
 module.exports = { io };
+
+// Global Error Handlers for Production Stability
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('❌ Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+process.on('uncaughtException', (err) => {
+    console.error('💥 Uncaught Exception thrown:', err);
+    // On uncaught exception, it's often safer to exit and let the orchestrator (Render) restart the service
+    process.exit(1);
+});

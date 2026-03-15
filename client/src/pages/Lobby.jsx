@@ -43,6 +43,7 @@ const Lobby = () => {
     const [filterType, setFilterType] = useState('All'); // 'All', 'Public', 'Private'
     const [isFilterOpen, setIsFilterOpen] = useState(false);
     const [copied, setCopied] = useState(false);
+    const isManualJoinRef = React.useRef(false);
 
     const socket = useSocket();
     const navigate = useNavigate();
@@ -63,13 +64,18 @@ const Lobby = () => {
             setError('');
             localStorage.setItem('lastRoomCode', roomCode);
 
-            // Redirect if auction is already in progress
-            if (state.status === 'Auctioning' || state.status === 'Paused') {
-                navigate(`/auction/${roomCode}`, { state: { roomState: state } });
-            } else if (state.status === 'Selection') {
-                navigate(`/selection/${roomCode}`);
-            } else if (state.status === 'Finished') {
-                navigate(`/results/${roomCode}`);
+            // Redirect only if it was a manual join/create OR if we are specifically handling a reconnection
+            // to an active auction/selection/results page.
+            // If the user is on the Lobby page and it's an auto-reconnect, we stay in the lobby view.
+            if (isManualJoinRef.current) {
+                if (state.status === 'Auctioning' || state.status === 'Paused') {
+                    navigate(`/auction/${roomCode}`, { state: { roomState: state } });
+                } else if (state.status === 'Selection') {
+                    navigate(`/selection/${roomCode}`);
+                } else if (state.status === 'Finished') {
+                    navigate(`/results/${roomCode}`);
+                }
+                isManualJoinRef.current = false; // Reset after handling
             }
         });
 
@@ -145,12 +151,14 @@ const Lobby = () => {
 
     const handleCreate = () => {
         if (!playerName) return setError('Please enter your name');
+        isManualJoinRef.current = true;
         socket.emit('create_room', { playerName, isPublic, maxTeams });
     };
 
     const handleJoin = (spectate = false, manualCode = null) => {
         const codeToUse = manualCode || roomCodeInput;
         if (!playerName || !codeToUse) return setError('Name and Room Code required');
+        isManualJoinRef.current = true;
         socket.emit('join_room', { roomCode: codeToUse, playerName, isSpectator: spectate });
     };
 
@@ -161,6 +169,15 @@ const Lobby = () => {
 
     const handleStart = () => {
         socket.emit('start_auction', { roomCode: roomState.roomCode });
+    };
+
+    const handleLeaveRoom = () => {
+        localStorage.removeItem('lastRoomCode');
+        setIsJoined(false);
+        setRoomState(null);
+        setAvailableTeamsForRoom(null);
+        setError('');
+        // Optional: socket.emit('leave_room', { roomCode: roomState.roomCode });
     };
 
     const handleCopyCode = () => {
@@ -313,6 +330,17 @@ const Lobby = () => {
                                                     title="Copy Room Code"
                                                 >
                                                     {copied ? <Check size={18} className="text-green-500" /> : <Copy size={18} />}
+                                                </button>
+                                                <button
+                                                    onClick={handleLeaveRoom}
+                                                    className="p-2.5 rounded-xl bg-red-500/10 border border-red-500/20 text-red-500 hover:bg-red-500 hover:text-white transition-all active:scale-90"
+                                                    title="Leave Room"
+                                                >
+                                                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                                                        <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+                                                        <polyline points="16 17 21 12 16 7"></polyline>
+                                                        <line x1="21" y1="12" x2="9" y2="12"></line>
+                                                    </svg>
                                                 </button>
                                             </div>
                                             {copied && (

@@ -29,7 +29,8 @@ const io = new Server(server, {
         origin: '*', // For dev, allow all
         methods: ['GET', 'POST']
     },
-    transports: ['websocket', 'polling'] // Explicitly allow both for proxies like Render
+    transports: ['polling', 'websocket'], // Try polling first then upgrade
+    allowEIO3: true // Support older clients if any
 });
 
 setupSocketHandlers(io);

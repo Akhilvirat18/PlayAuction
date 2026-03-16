@@ -14,7 +14,24 @@ connectDB();
 const app = express();
 
 // Middleware
-app.use(cors());
+const allowedOrigins = [
+    'https://play-auction-l8u7.vercel.app',
+    'https://play-auction-l8u7-akhils-projects-b24479e3.vercel.app', 
+    'http://localhost:5173',
+    'http://localhost:5174'
+];
+
+app.use(cors({
+    origin: (origin, callback) => {
+        if (!origin || allowedOrigins.includes(origin)) {
+            callback(null, true);
+        } else {
+            callback(new Error('Not allowed by CORS'));
+        }
+    },
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS']
+}));
 app.use(express.json()); // Body parser
 
 const server = http.createServer(app);
@@ -26,8 +43,9 @@ const apiRoutes = require('./routes/api');
 // Setup Socket.io
 const io = new Server(server, {
     cors: {
-        origin: '*', // For dev, allow all
-        methods: ['GET', 'POST']
+        origin: allowedOrigins,
+        methods: ['GET', 'POST'],
+        credentials: true
     },
     transports: ['polling', 'websocket'], // Try polling first then upgrade
     allowEIO3: true // Support older clients if any
@@ -46,7 +64,7 @@ app.get('/ping', (req, res) => {
 });
 
 // Start listening
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 5050;
 server.listen(PORT, () => {
     console.log(`✅ Server running on port ${PORT}`);
 });

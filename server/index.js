@@ -13,11 +13,23 @@ connectDB();
 
 const app = express();
 
-// Middleware - Dynamically allow origins to prevent deployment friction
+// Middleware
+const allowedOrigins = [
+    'https://play-auction-wii2.vercel.app', // The new deployed URL
+    'https://play-auction-l8u7.vercel.app',
+    'https://play-auction-l8u7-akhils-projects-b24479e3.vercel.app', 
+    'http://localhost:5173',
+    'http://localhost:5174'
+];
+
 app.use(cors({
     origin: (origin, callback) => {
-        // Allows any origin to connect. For a highly secure prod app, restrict this.
-        callback(null, true);
+        if (!origin || allowedOrigins.includes(origin)) {
+            callback(null, true);
+        } else {
+            console.warn(`Blocked by CORS: ${origin}`);
+            callback(new Error('Not allowed by CORS'));
+        }
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS']
@@ -33,7 +45,7 @@ const apiRoutes = require('./routes/api');
 // Setup Socket.io
 const io = new Server(server, {
     cors: {
-        origin: true, // Echoes the origin of the request, allowing all domains for credentials: true
+        origin: allowedOrigins,
         methods: ['GET', 'POST'],
         credentials: true
     },

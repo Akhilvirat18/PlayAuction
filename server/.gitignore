@@ -1,3 +1,13 @@
 node_modules/
 .env
 .DS_Store
+
+# Debug / diagnostic scripts — never deploy these
+test_*.js
+*_check_db.js
+check_db.js
+sanity_check.js
+testGemini.js
+clear_new_enhanced.js
+db_scan.txt
+output.log

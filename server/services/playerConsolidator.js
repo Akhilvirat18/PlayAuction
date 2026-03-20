@@ -131,7 +131,17 @@ const consolidatePlayers = async () => {
         const db = mongoose.connection.db;
         let allPlayers = [];
 
-        for (const colName of PLAYER_COLLECTIONS) {
+        // Dynamically discover all collections in the database to prevent spelling/casing misses
+        const allCollections = await db.listCollections().toArray();
+        const nonPoolCollections = ['users', 'rooms', 'auctionrooms', 'franchises', 'players', 'new_enhanced', 'auctiontransactions', 'system.indexes'];
+        
+        const candidatePools = allCollections
+            .map(c => c.name)
+            .filter(name => !nonPoolCollections.includes(name.toLowerCase()));
+
+        console.log(`>>> Found ${candidatePools.length} potential pool collections to scan...`);
+
+        for (const colName of candidatePools) {
             try {
                 const raw = await db.collection(colName).find({}).toArray();
                 if (raw.length === 0) continue;
@@ -143,7 +153,7 @@ const consolidatePlayers = async () => {
                     const isOverseas = !(['india', 'indian'].includes(nationality.toLowerCase().trim()));
                     const playerName = doc.player || doc.Player || doc.name || 'Unknown Player';
                     const role = normalizeRole(doc.role);
-                    const pOrder = getDetailedPoolOrder(colName, role);
+                    const pOrder = getDetailedPoolOrder(colName, role); // Uses robust fuzzy matching
 
                     return {
                         playerId: `PLY_${colName}_${idx}_${Date.now()}`,
@@ -174,17 +184,23 @@ const consolidatePlayers = async () => {
                 });
                 allPlayers = allPlayers.concat(mapped);
             } catch (colErr) {
-                // Collection might not exist in this database
+                // Collection might not exist or be accessible
                 continue;
             }
         }
 
-        if (allPlayers.length > 0) {
-            console.log(`>>> Inserting ${allPlayers.length} consolidated players into 'new_enhanced'...`);
-            await Player.insertMany(allPlayers);
-            console.log('>>> Consolidation complete!');
+        // Non-destructive healing: check what we already have
+        const existingDocs = await Player.find({}, 'name player').lean();
+        const existingNames = new Set(existingDocs.map(d => (d.name || d.player || '').toLowerCase().trim()));
+
+        const missingPlayers = allPlayers.filter(p => !existingNames.has(p.player.toLowerCase().trim()));
+
+        if (missingPlayers.length > 0) {
+            console.log(`>>> Found ${missingPlayers.length} missing players! Inserting them into 'new_enhanced'...`);
+            await Player.insertMany(missingPlayers);
+            console.log('>>> Missing players recovered successfully!');
         } else {
-            console.warn('>>> No players found in any of the pool collections. Please check your database.');
+            console.log('>>> All players are fully populated. No missing players detected.');
         }
 
     } catch (error) {

@@ -1,10 +1,8 @@
 const Room = require('../models/Room');
-const Player = require('../models/Player');
 const AuctionRoom = require('../models/AuctionRoom');
 const Franchise = require('../models/Franchise');
 const AuctionTransaction = require('../models/AuctionTransaction');
 const mongoose = require('mongoose');
-const consolidatePlayers = require('../services/playerConsolidator');
 
 // Default franchise data — used as a self-healing fallback if DB is empty
 const DEFAULT_FRANCHISES = [
@@ -35,10 +33,66 @@ async function ensureFranchisesSeeded() {
     }
 }
 
+// The exact pool collections in the order they should enter the auction podium
+const AUCTION_POOL_ORDER = [
+    'marquee_wicketkeepers', 'marquee_batters', 'marquee_bowlers', 'marquee_allrounders',
+    'pool1_wicketkeepers', 'pool1_batters', 'pool1_bowlers', 'pool1_allrounders',  
+    'pool2_wicketkeepers', 'pool2_batters', 'pool2_bowlers', 'pool2_allrounders',
+    'pool3_wicketkeepers', 'pool3_batters', 'pool3_bowlers', 'pool3_allrounders',
+    'Emerging_players'
+];
+
 async function fetchAllPlayers() {
-    // Fetch from the correctly seeded Player collection (new_enhanced)
-    // Primary sort: poolOrder (1=Marquee, etc.), Secondary sort: createdAt
-    return await Player.find().sort({ poolOrder: 1, createdAt: 1 }).lean();
+    const db = mongoose.connection.db;
+    let allPlayers = [];
+
+    // Get all actual collection names from MongoDB to handle case/spelling differences
+    const existingCollections = await db.listCollections().toArray();
+    const existingNames = existingCollections.map(c => c.name);
+
+    for (const poolName of AUCTION_POOL_ORDER) {
+        // Case-insensitive match against what's actually in the DB
+        const actualName = existingNames.find(
+            n => n.toLowerCase() === poolName.toLowerCase()
+        );
+        if (!actualName) continue;
+
+        try {
+            const docs = await db.collection(actualName).find({}).toArray();
+            const mapped = docs.map((doc, idx) => ({
+                _id:        doc._id,
+                player:     doc.player || doc.Player || doc.name || 'Unknown',
+                name:       doc.player || doc.Player || doc.name || 'Unknown',
+                role:       doc.role || 'Batsman',
+                nationality: doc.nationality || 'Unknown',
+                isOverseas: !(['india', 'indian'].includes((doc.nationality || '').toLowerCase().trim())),
+                basePrice:  doc.basePrice || doc.base_price || 50,
+                poolName:   actualName,
+                photoUrl:   doc.image_path || doc.imagepath || doc.photoUrl || '',
+                stats: {
+                    matches:     Number(doc.matches) || 0,
+                    runs:        Number(doc.runs) || 0,
+                    wickets:     Number(doc.wickets) || 0,
+                    battingAvg:  Number(doc.batting_avg || doc.bat_avg) || 0,
+                    bowlingAvg:  Number(doc.bowling_avg || doc.bowl_avg) || 0,
+                    strikeRate:  Number(doc.batting_strike_rate || doc.strike_rate) || 0,
+                    economy:     Number(doc.bowling_economy || doc.economy) || 0,
+                    highestScore: String(doc.highest_score || doc.hs || '0'),
+                    bestBowling:  String(doc.best_bowling || doc.bb || '0/0'),
+                    stumpings:   Number(doc.stumpings) || 0,
+                    catches:     Number(doc.catches) || 0,
+                    iplSeasonsActive: Math.max(1, Math.floor((Number(doc.matches) || 0) / 14))
+                }
+            }));
+            allPlayers = allPlayers.concat(mapped);
+            console.log(`>>> Loaded ${docs.length} players from '${actualName}'`);
+        } catch (err) {
+            console.warn(`>>> Could not read collection '${actualName}':`, err.message);
+        }
+    }
+
+    console.log(`>>> Total players loaded for auction: ${allPlayers.length}`);
+    return allPlayers;
 }
 
 const IPL_TEAMS = [
@@ -76,7 +130,6 @@ function calculateAvailableTeams(allFranchises, takenTeams) {
 // Sync in-memory roomStates with DB on startup
 async function initializeRoomStates(io) {
     try {
-        await consolidatePlayers();     // Ensure we have players in the master collection
         await ensureFranchisesSeeded(); // Guarantee franchise data exists
         const activeRooms = await AuctionRoom.find({ status: { $ne: 'Finished' } });
         const players = await fetchAllPlayers();
@@ -104,18 +157,16 @@ async function initializeRoomStates(io) {
         });
         console.log(`>>> Recovered ${activeRooms.length} active rooms from database.`);
 
-        // Resume timers for active rooms
+        // Auto-Pause all previously 'Auctioning' rooms on server restart
+        // This prevents the server from burning through empty/abandoned rooms
         activeRooms.forEach(room => {
             if (room.status === 'Auctioning') {
-                console.log(`>>> Resuming Auction Timer for Room: ${room.roomId}`);
                 const state = roomStates[room.roomId];
-                state.timerEndsAt = Date.now() + (state.timerDuration * 1000);
-                state.timer = state.timerDuration;
-
-                if (roomTimers[room.roomId]) clearInterval(roomTimers[room.roomId]);
-                roomTimers[room.roomId] = setInterval(() => {
-                    tickTimer(room.roomId, io);
-                }, 500);
+                if (state) {
+                    state.status = 'Paused';
+                    AuctionRoom.updateOne({ roomId: room.roomId }, { status: 'Paused' }).exec();
+                    console.log(`>>> Auto-Paused Room: ${room.roomId} due to server restart.`);
+                }
             }
         });
     } catch (err) {
@@ -623,13 +674,19 @@ function tickTimer(roomCode, io) {
 
     if (state.timer <= 0) {
         clearInterval(roomTimers[roomCode]);
+        if (state.currentIndex >= state.players.length || !state.players[state.currentIndex]) {
+            return; // Defensive check
+        }
         processHammerDown(roomCode, io);
     }
 }
 
 async function processHammerDown(roomCode, io) {
     const state = roomStates[roomCode];
+    if (!state) return;
+    
     const player = state.players[state.currentIndex];
+    if (!player) return; // Defensive check against undefined player
 
     const playerName = player.player || player.name || 'Unknown Player';
 
@@ -704,7 +761,11 @@ async function processHammerDown(roomCode, io) {
                 return; // Stop further processing for this player
             }
         } catch (err) {
-            console.error("Critical DB Persistence Error on SOLD:", err.message);
+            if (err.code === 11000) {
+                // Ignore duplicate key error quietly, room might be recovering
+            } else {
+                console.error("Critical DB Persistence Error on SOLD:", err.message);
+            }
         }
 
     } else {
@@ -721,7 +782,11 @@ async function processHammerDown(roomCode, io) {
                 $set: { currentPlayerIndex: state.currentIndex + 1 }
             });
         } catch (err) {
-            console.error("Critical DB Persistence Error on UNSOLD:", err.message);
+            if (err.code === 11000) {
+                // Ignore duplicate key error quietly, room might be recovering
+            } else {
+                console.error("Critical DB Persistence Error on UNSOLD:", err.message);
+            }
         }
     }
 

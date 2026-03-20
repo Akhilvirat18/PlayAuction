@@ -37,9 +37,25 @@ router.get('/room/:roomCode/results', async (req, res) => {
 
 router.get('/players', async (req, res) => {
     try {
-        const Player = require('../models/Player');
-        const players = await Player.find({});
-        res.json(players);
+        const mongoose = require('mongoose');
+        const AUCTION_POOL_ORDER = [
+            'marquee_wicketkeepers', 'marquee_batters', 'marquee_bowlers', 'marquee_allrounders',
+            'pool1_wicketkeepers', 'pool1_batters', 'pool1_bowlers', 'pool1_allrounders',
+            'pool2_wicketkeepers', 'pool2_batters', 'pool2_bowlers', 'pool2_allrounders',
+            'pool3_wicketkeepers', 'pool3_batters', 'pool3_bowlers', 'pool3_allrounders',
+            'Emerging_players'
+        ];
+        const db = mongoose.connection.db;
+        const existingCollections = await db.listCollections().toArray();
+        const existingNames = existingCollections.map(c => c.name);
+        let allPlayers = [];
+        for (const poolName of AUCTION_POOL_ORDER) {
+            const actualName = existingNames.find(n => n.toLowerCase() === poolName.toLowerCase());
+            if (!actualName) continue;
+            const docs = await db.collection(actualName).find({}).toArray();
+            allPlayers = allPlayers.concat(docs.map(d => ({ ...d, poolName: actualName })));
+        }
+        res.json(allPlayers);
     } catch (error) {
         res.status(500).json({ error: 'Server error' });
     }

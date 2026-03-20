@@ -13,21 +13,11 @@ connectDB();
 
 const app = express();
 
-// Middleware
-const allowedOrigins = [
-    'https://play-auction-l8u7.vercel.app',
-    'https://play-auction-l8u7-akhils-projects-b24479e3.vercel.app', 
-    'http://localhost:5173',
-    'http://localhost:5174'
-];
-
+// Middleware - Dynamically allow origins to prevent deployment friction
 app.use(cors({
     origin: (origin, callback) => {
-        if (!origin || allowedOrigins.includes(origin)) {
-            callback(null, true);
-        } else {
-            callback(new Error('Not allowed by CORS'));
-        }
+        // Allows any origin to connect. For a highly secure prod app, restrict this.
+        callback(null, true);
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS']
@@ -43,7 +33,7 @@ const apiRoutes = require('./routes/api');
 // Setup Socket.io
 const io = new Server(server, {
     cors: {
-        origin: allowedOrigins,
+        origin: true, // Echoes the origin of the request, allowing all domains for credentials: true
         methods: ['GET', 'POST'],
         credentials: true
     },

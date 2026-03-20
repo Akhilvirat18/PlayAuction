@@ -17,7 +17,15 @@ const AuctionPodium = () => {
 
     const [gameState, setGameState] = useState(location.state?.roomState || null);
     const [playerName] = useState(localStorage.getItem('playerName') || 'Anonymous');
-    const [currentPlayer, setCurrentPlayer] = useState(null);
+    
+    // Initialize currentPlayer from state passed via navigate if available
+    const [currentPlayer, setCurrentPlayer] = useState(() => {
+        const initialS = location.state?.roomState;
+        if (initialS?.players && typeof initialS.currentIndex === 'number') {
+            return initialS.players[initialS.currentIndex] || null;
+        }
+        return null;
+    });
     const [currentBid, setCurrentBid] = useState({ amount: 0, teamId: null, teamName: null, teamColor: null });
     const [timer, setTimer] = useState(10);
     const [myTeam, setMyTeam] = useState(null);

@@ -14,8 +14,9 @@ export const SocketProvider = ({ children }) => {
         // Connect to the backend server
         const newSocket = io(import.meta.env.VITE_API_URL || 'http://localhost:5050', {
             transports: ['polling', 'websocket'],
-            reconnectionAttempts: 5,
-            timeout: 10000
+            reconnectionAttempts: 10,
+            reconnectionDelay: 5000,
+            timeout: 45000 // 45 seconds for Render cold start
         });
 
         newSocket.on('connect', () => {

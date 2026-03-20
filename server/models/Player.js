@@ -12,6 +12,7 @@ const playerSchema = new mongoose.Schema({
   imagepath: { type: String },
   image_path: { type: String },
   poolName: { type: String },
+  poolOrder: { type: Number, default: 99 }, // NEW: Priority for auction order
   stats: {
     matches: { type: Number, default: 0 },
     runs: { type: Number, default: 0 },

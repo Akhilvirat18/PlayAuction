@@ -4,6 +4,7 @@ const AuctionRoom = require('../models/AuctionRoom');
 const Franchise = require('../models/Franchise');
 const AuctionTransaction = require('../models/AuctionTransaction');
 const mongoose = require('mongoose');
+const consolidatePlayers = require('../services/playerConsolidator');
 
 // Default franchise data — used as a self-healing fallback if DB is empty
 const DEFAULT_FRANCHISES = [
@@ -36,8 +37,8 @@ async function ensureFranchisesSeeded() {
 
 async function fetchAllPlayers() {
     // Fetch from the correctly seeded Player collection (new_enhanced)
-    // Sorting by createdAt to maintain the sequencial order of pools
-    return await Player.find().sort({ createdAt: 1 }).lean();
+    // Primary sort: poolOrder (1=Marquee, etc.), Secondary sort: createdAt
+    return await Player.find().sort({ poolOrder: 1, createdAt: 1 }).lean();
 }
 
 const IPL_TEAMS = [
@@ -73,8 +74,9 @@ function calculateAvailableTeams(allFranchises, takenTeams) {
 }
 
 // Sync in-memory roomStates with DB on startup
-async function initializeRoomStates() {
+async function initializeRoomStates(io) {
     try {
+        await consolidatePlayers();     // Ensure we have players in the master collection
         await ensureFranchisesSeeded(); // Guarantee franchise data exists
         const activeRooms = await AuctionRoom.find({ status: { $ne: 'Finished' } });
         const players = await fetchAllPlayers();
@@ -101,6 +103,21 @@ async function initializeRoomStates() {
             }
         });
         console.log(`>>> Recovered ${activeRooms.length} active rooms from database.`);
+
+        // Resume timers for active rooms
+        activeRooms.forEach(room => {
+            if (room.status === 'Auctioning') {
+                console.log(`>>> Resuming Auction Timer for Room: ${room.roomId}`);
+                const state = roomStates[room.roomId];
+                state.timerEndsAt = Date.now() + (state.timerDuration * 1000);
+                state.timer = state.timerDuration;
+
+                if (roomTimers[room.roomId]) clearInterval(roomTimers[room.roomId]);
+                roomTimers[room.roomId] = setInterval(() => {
+                    tickTimer(room.roomId, io);
+                }, 500);
+            }
+        });
     } catch (err) {
         console.error("Failed to initialize room states:", err);
     }
@@ -108,7 +125,7 @@ async function initializeRoomStates() {
 
 const setupSocketHandlers = (io) => {
     // Run initialization once
-    initializeRoomStates().then(() => {
+    initializeRoomStates(io).then(() => {
         // Broadcast recovered rooms once initialized
         const allRooms = Object.values(roomStates).map(room => ({
             roomCode: room.roomCode,

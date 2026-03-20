@@ -63,7 +63,7 @@ const importData = async () => {
         client = new MongoClient(MONGO_URI);
         await client.connect();
 
-        const db = client.db('ipl_data');
+        const db = client.db('ipl');
         let allPlayers = [];
 
         console.log('Fetching players from all pool collections...');
@@ -107,8 +107,8 @@ const importData = async () => {
 
         console.log(`Total players mapped: ${allPlayers.length}`);
 
-        console.log('Connecting Mongoose to ipl_data database...');
-        await mongoose.connect(MONGO_URI, { dbName: 'ipl_data' });
+        console.log('Connecting Mongoose to ipl database...');
+        await mongoose.connect(MONGO_URI, { dbName: 'ipl' });
         
         console.log('Clearing existing data in new_enhanced collection...');
         await Player.deleteMany({});
@@ -116,7 +116,7 @@ const importData = async () => {
         console.log('Inserting authentic players...');
         await Player.insertMany(allPlayers);
         
-        console.log('SUCCESS: All players imported successfully to ipl_data.new_enhanced!');
+        console.log('SUCCESS: All players imported successfully to ipl.new_enhanced!');
         process.exit(0);
     } catch (error) {
         if (error.name === 'ValidationError') {
